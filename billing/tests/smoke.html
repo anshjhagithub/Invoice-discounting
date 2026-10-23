@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset="utf-8"><title>smoke</title></head><body>
+<div class="app"><aside id="sidebar"></aside><main id="main"></main></div><div id="toasts"></div><pre id="out">running…</pre>
+<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
+<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script>
+<script>
+const out = []; const errs = [];
+window.addEventListener('error', e => errs.push('ERR ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno));
+try { localStorage.clear(); } catch (e) {}
+seedDb('default');
+const routes = ['dashboard', 'pos', 'po/new', 'po/po-1042', 'po/po-1042?tab=lines', 'po/po-1042?tab=billing', 'po/po-1042?tab=receipts', 'po/po-1042?tab=invoices', 'po/po-1042?tab=audit',
+  'po/po-1043?tab=billing', 'po/po-1060?tab=billing', 'po/po-1044?tab=billing', 'po/po-1061', 'po/po-1052?tab=billing', 'grns', 'grn/new?po=po-1042', 'srns', 'srn/new?po=po-1051', 'srn/new?po=po-1052&ms=ms-1052-1', 'milestones', 'milestone/ms-1052-1', 'milestone/ms-1052-2', 'milestone/ms-1043-1',
+  'claims', 'claim/new?po=po-1060', 'claim/pc-1060-2', 'invoices', 'invoice/new?po=po-1042', 'invoice/new?po=po-1043&ms=ms-1043-1', 'invoice/new?po=po-1060', 'invoice/new?po=po-1044', 'invoice/new?po=po-1051', 'matching', 'approvals', 'approvals?tab=receipts', 'approvals?tab=milestones', 'approvals?tab=pos', 'approvals?tab=claims', 'ap', 'schedules', 'invoices?status=Matching+Failed'];
+db.invoices.forEach(i => { routes.push('invoice/' + i.id, 'matching/' + i.id); });
+db.grns.forEach(g => routes.push('grn/' + g.id)); db.srns.forEach(s => routes.push('srn/' + s.id));
+routes.push('po/po-1042/edit');
+const ids = routes.slice();
+function step(i) {
+  if (i >= ids.length) { document.getElementById('out').textContent = (errs.length ? errs.join('\n') + '\n' : '') + out.join('\n') + '\nDONE routes=' + ids.length; return; }
+  const h = ids[i]; location.hash = '#/' + h; render();
+  const m = document.getElementById('main'); const bad = m.innerHTML.includes('Screen error') || m.innerHTML.length < 200;
+  if (bad) out.push('BAD ' + h + ' :: ' + m.textContent.slice(0, 200));
+  step(i + 1);
+}
+step(0);
+// interactive: draft PO edit page (wizard) steps
+location.hash = '#/po/new'; render();
+for (let s = 2; s <= 4; s++) { ui.f.step = s; ui.f.billingMethod = s === 3 ? 'Milestone' : ui.f.billingMethod; if (s === 3) ACT['po-method']({ dataset: { m: 'Milestone' } }); render(); const m = document.getElementById('main'); if (m.innerHTML.includes('Screen error')) out.push('BAD wizard step ' + s + ' ' + m.textContent.slice(0, 200)); }
+document.getElementById('out').textContent += '\nwizard ok';
+</script></body></html>

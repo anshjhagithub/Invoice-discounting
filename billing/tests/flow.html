@@ -1,0 +1,58 @@
+<!doctype html><html><head><meta charset="utf-8"><title>flow</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
+<div class="app"><aside id="sidebar" class="sidebar"></aside><main id="main" class="main"></main></div><div id="toasts" class="toast-stack"></div><pre id="out">running…</pre>
+<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
+<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script>
+<script>
+const log = [], flush = () => { document.getElementById('out').textContent = log.join('\n'); };
+const T = (n, ok, extra) => { log.push((ok ? 'PASS ' : 'FAIL ') + n + (ok ? '' : ' :: ' + (extra || ''))); flush(); };
+window.addEventListener('error', e => { log.push('ERR ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); flush(); });
+const nav = h => { location.hash = '#/' + h; render(); };
+const submitModal = () => { const f = document.querySelector('.overlay form'); if (!f) return false; f.requestSubmit(); return true; };
+const modalText = () => document.querySelector('.overlay')?.textContent || '';
+try { localStorage.clear(); } catch (e) {}
+seedDb('A'); const PO = n => db.pos.find(p => p.number === 'PO-2026-' + n);
+/* ---- Scenario A through the UI handlers ---- */
+nav('po/po-1042/edit?step=3');
+T('wizard on step 3', ui.f && ui.f.step === 3);
+ACT['po-method']({ dataset: { m: 'Progressive' } });
+T('method progressive in form', ui.f.billingMethod === 'Progressive');
+ACT['po-submit'](); T('PO pending approval', PO(1042).status === 'Pending Approval', PO(1042).status);
+nav('po/po-1042'); ACT['po-approve']({ dataset: { id: 'po-1042' } }); submitModal(); T('PO approved', PO(1042).status === 'Approved');
+const grn = (rec, acc, rej) => { nav('grn/new?po=po-1042'); ui.f.received = rec; ui.f.accepted = acc; ui.f.rejected = rej; grnDerive(); ACT['grn-save']({ dataset: { m: 'accept' } }); };
+grn(30, 30, 0); grn(40, 40, 0); grn(10, 7, 3);
+T('3 GRNs accepted', db.grns.filter(g => g.poId === 'po-1042' && ['Accepted', 'Partially Accepted'].includes(g.status)).length === 3, JSON.stringify(db.grns.filter(g => g.poId === 'po-1042').map(g => g.status)));
+T('77 accepted', poSummary(PO(1042)).acceptedQty === 77);
+const g1 = db.grns.find(g => g.poId === 'po-1042' && g.number === 'GRN-001'), g2 = db.grns.find(g => g.poId === 'po-1042' && g.number === 'GRN-002');
+const invoice = (no, ref, qty) => { nav('invoice/new?po=po-1042'); ui.f.number = no; const g = ref; ACT['inv-pick']({ checked: true, dataset: { kind: 'grn', ref: g.id } }); ui.f.alloc['grn:' + g.id].qty = qty; invDerive(); return ACT['inv-save']({ dataset: { m: 'submit' } }); };
+invoice('GIE-001', g1, 30);
+T('invoice 1 created', db.invoices.some(i => i.number === 'GIE-001' && i.status === 'Pending Approval'));
+T('hash moved to invoice detail', location.hash.startsWith('#/invoice/'), location.hash);
+T('detail shows Matched', document.getElementById('main').textContent.includes('Matched'));
+invoice('GIE-002', g2, 20); T('invoice 2 created', db.invoices.some(i => i.number === 'GIE-002'));
+closeOverlays();
+invoice('GIE-003', g1, 30); T('duplicate blocked in UI (modal)', modalText().includes('Duplicate allocation'), modalText()); T('no GIE-003 created', !db.invoices.some(i => i.number === 'GIE-003')); closeOverlays();
+nav('invoice/new?po=po-1042'); ui.f.number = 'X'; ACT['inv-pick']({ checked: true, dataset: { kind: 'grn', ref: g2.id } }); ui.f.alloc['grn:' + g2.id].qty = 25; invDerive();
+T('live validation shows spec message', document.getElementById('inv-derived').textContent.includes('Eligible: 20 units. Requested: 25 units.'));
+nav('po/po-1042?tab=billing'); const t = document.getElementById('main').textContent; T('PO shows remaining 27,000', t.includes('27,000'));
+/* approve + AP via handlers */
+const i1 = db.invoices.find(i => i.number === 'GIE-001'); ACT['inv-approve']({ dataset: { id: i1.id } }); submitModal(); T('invoice approved', getInv(i1.id).status === 'Approved');
+ACT['inv-post']({ dataset: { id: i1.id } }); submitModal(); T('posted', getInv(i1.id).status === 'Posted'); ACT['inv-pay']({ dataset: { id: i1.id } }); submitModal(); T('paid', getInv(i1.id).status === 'Paid');
+nav('ap'); T('AP lists invoice', document.getElementById('main').textContent.includes('GIE-001'));
+/* ---- Scenario B via UI ---- */
+seedDb('B'); nav('po/po-1042/edit?step=3');
+T('B: builder shows 3 milestones', ui.f.milestones.length === 3);
+ui.f.milestones[2].pct = 40; poDerive(); T('B: >100% shown', document.getElementById('sch-sum').textContent.includes('exceeds'), document.getElementById('sch-sum').textContent);
+ACT['ms-finalize'](); T('B: finalize blocked', modalText().includes('cannot be finalized')); closeOverlays();
+ui.f.milestones[2].pct = 30; poDerive(); ACT['ms-up']({ dataset: { i: 1 } }); ACT['ms-down']({ dataset: { i: 0 } }); T('B: reorder works', ui.f.milestones[0].name === 'Design Approval', ui.f.milestones.map(m => m.name));
+ACT['ms-finalize'](); T('B: finalized', ui.f.scheduleFinal === true); ACT['po-submit'](); T('B: PO pending', PO(1042).status === 'Pending Approval');
+nav('po/po-1042'); ACT['po-approve']({ dataset: { id: 'po-1042' } }); submitModal(); T('B: PO approved', PO(1042).status === 'Approved');
+const m1 = db.milestones.find(m => m.poId === 'po-1042' && m.code === 'M1');
+nav('milestone/' + m1.id); ui.f.evidence = ['design.pdf']; ui.f.remarks = 'Design complete'; ACT['ms-submit-page']({ dataset: { id: m1.id } }); T('B: M1 submitted', getMS(m1.id).status === 'Submitted for Acceptance');
+ACT['ms-approve']({ dataset: { id: m1.id } }); submitModal(); T('B: M1 approved', getMS(m1.id).status === 'Approved');
+nav('invoice/new?po=po-1042&ms=' + m1.id); T('B: milestone preselected', ui.f.alloc['milestone:' + m1.id]?.on === true); ui.f.number = 'MS-1'; invDerive(); ACT['inv-save']({ dataset: { m: 'submit' } });
+T('B: milestone invoice pending approval', db.invoices.some(i => i.number === 'MS-1' && i.status === 'Pending Approval'));
+nav('invoice/new?po=po-1042&ms=' + m1.id); ui.f.number = 'MS-2'; invDerive(); ACT['inv-save']({ dataset: { m: 'submit' } }); T('B: second M1 invoice blocked', modalText().includes('Duplicate allocation') && !db.invoices.some(i => i.number === 'MS-2'), modalText()); closeOverlays();
+nav('po/po-1042?tab=billing'); const bt = document.getElementById('main').textContent; T('B: milestone table', bt.includes('Invoiced') && bt.includes('Not Eligible'));
+ACT['ms-drawer']({ dataset: { id: m1.id } }); T('B: milestone drawer opens', !!document.querySelector('.drawer'));
+document.getElementById('out').textContent = log.join('\n') + '\n' + (log.some(l => l.startsWith('FAIL') || l.startsWith('ERR')) ? 'SOME FAILED' : 'ALL UI FLOWS PASSED');
+</script></body></html>
