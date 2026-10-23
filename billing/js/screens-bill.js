@@ -3,8 +3,9 @@
    ===================================================================== */
 
 /* ================================================================ Milestones */
-ROUTES.milestones = () => `<div>${pageHead({ title: 'Milestones', crumbs: [['Billing Schedules', '#/schedules'], ['Milestones']] })}
+ROUTES.milestones = () => `<div>${pageHead({ title: 'Milestones', crumbs: [['Billing Schedules', '#/schedules'], ['Milestones']], right: gbtn('po.edit', 'go', 'New PO with milestone billing', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/po/new?method=Milestone' } }) })}
   <div class="content">${listHtml('milestones', {
+    pills: { name: 'status', values: ["Pending Acceptance","Submitted for Acceptance","More Info Requested","Approved","Rejected"], get: m => m.status },
     searchPh: 'Search milestone, PO…',
     filters: [{ name: 'status', label: 'Acceptance', options: () => ['Pending Acceptance', 'Submitted for Acceptance', 'More Info Requested', 'Approved', 'Rejected'] }, { name: 'billing', label: 'Billing', options: () => ['Not Eligible', 'Eligible', 'Invoiced'] }, { name: 'po', label: 'PO', options: () => db.pos.filter(p => p.billingMethod === 'Milestone').map(p => [p.id, p.number]) }],
     rows: () => db.milestones.filter(m => m.status !== 'Draft').sort((a, b) => getPO(a.poId).number.localeCompare(getPO(b.poId).number) || a.seq - b.seq),
@@ -28,7 +29,7 @@ ROUTES.milestone = r => {
   const acts = [];
   if (ent - u.value > EPS) acts.push(gbtn('inv.create', 'go', 'Create invoice for this milestone', { cls: 'btn-primary', icn: 'receipt', data: { hash: `#/invoice/new?po=${po.id}&ms=${m.id}` } }));
   return `<div>${pageHead({ title: `${m.code} — ${m.name}`, sub: sb(m.status), crumbs: [['Billing Schedules', '#/schedules'], ['Milestones', '#/milestones'], [po.number, `#/po/${po.id}?tab=billing`], [m.code]], right: acts.join('') })}
-  <div class="content"><div class="status-banner ${banner[0]}"><div><div class="t">${banner[1]}</div><div class="d">${esc(banner[2] || '')}</div></div></div>
+  <div class="content">${lifecycle(m, po, g, bill)}<div class="status-banner ${banner[0]}"><div><div class="t">${banner[1]}</div><div class="d">${esc(banner[2] || '')}</div></div></div>
   ${strip([['Milestone amount', money(m.amount), `${fmtNum(m.pct)}% of PO`], ['Acceptance', sb(m.status)], ['Eligible invoice amount', money(Math.max(0, r2(ent - u.value))), ent > 0 ? 'approved & gates cleared' : 'not yet eligible', ent - u.value > EPS ? 'hl' : ''], ['Invoiced', money(u.value), u.invs.map(invRef).join(', ')], ['Remaining milestone balance', money(r2(m.amount - u.value))]])}
   <div class="grid-2" style="margin-top:16px;align-items:start">
    <div>
@@ -47,6 +48,12 @@ ROUTES.milestone = r => {
    </div></div>
   <div class="sec-title">History</div><ul class="tl">${db.audit.filter(a => a.ref === `${po.number} / ${m.code}`).map(a => `<li class="${a.kind === 'ok' ? 'ok' : a.kind === 'bad' ? 'bad' : ''}"><div class="tt">${esc(a.text)}</div><div class="tm">${esc(a.by)} · ${fmtDT(a.at)}</div></li>`).join('') || '<li><div class="tm">No activity yet.</div></li>'}</ul></div></div>`;
 };
+function lifecycle(m, po, g, bill) {
+  const sub = ['Submitted for Acceptance', 'Approved'].includes(m.status), apr = m.status === 'Approved';
+  const steps = [['Evidence submitted', sub], ['Milestone approved', apr], ...(m.srnRequired ? [['SRN accepted', g.ok]] : []), ['Invoiced', bill === 'Invoiced']];
+  const cur = steps.findIndex(s => !s[1]);
+  return `<div class="stepper" style="margin-top:14px">${steps.map(([t, d], i) => `<div class="step ${d ? 'done' : i === cur ? 'on' : ''}"><span class="n">${d ? '✓' : i + 1}</span>${t}</div>`).join('')}</div>`;
+}
 ACT['ms-submit-page'] = el => { const f = ui.f; done(A.msSubmit(el.dataset.id, { actualDate: f.actualDate, remarks: f.remarks, evidence: f.evidence }), () => { ui.f = null; }); };
 ACT['ms-approve'] = el => { const m = getMS(el.dataset.id); confirmBox({ title: 'Approve milestone', message: `Approve <b>${esc(msFull(m))}</b> (${money(m.amount)})? ${m.srnRequired ? 'It still needs an accepted SRN before it can be invoiced.' : 'It becomes invoice-eligible immediately.'}`, confirmLabel: 'Approve', onConfirm: () => { closeOverlays(); done(A.msApprove(m.id)); } }); };
 ACT['ms-reject'] = el => reasonModal({ title: 'Reject milestone', label: 'Rejection reason', btn: 'Reject milestone', onSubmit: reason => { closeOverlays(); done(A.msReject(el.dataset.id, reason)); } });
@@ -70,6 +77,7 @@ function msDrawer(id) {
 /* ================================================================ Progress claims */
 ROUTES.claims = () => `<div>${pageHead({ title: 'Progress Claims', crumbs: [['Billing Schedules', '#/schedules'], ['Progress Claims']], right: gbtn('claim.create', 'go', 'New progress claim', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/claim/new' } }) })}
   <div class="content">${alertBox('info', 'Certified work-progress mode', 'Applies only to progressive POs configured with “Certified work progress”. Current claim = new cumulative − previously certified. Only newly certified, unconsumed value becomes invoice-eligible.')}${listHtml('claims', {
+    pills: { name: 'status', values: ["Draft","Submitted","Certified","Rejected"], get: c => c.status },
     searchPh: 'Search claim, PO…',
     filters: [{ name: 'status', label: 'Status', options: () => ['Draft', 'Submitted', 'Certified', 'Rejected'] }, { name: 'po', label: 'PO', options: () => db.pos.filter(poCertified).map(p => [p.id, p.number]) }],
     rows: () => db.claims.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.seq - a.seq),

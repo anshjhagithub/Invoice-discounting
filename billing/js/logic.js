@@ -114,7 +114,8 @@ function scheduleCheck(ms, poValue, mode, exception) {
   const amt = m => mode === 'percent' ? r2((Number(m.pct) || 0) * poValue / 100) : r2(Number(m.amount) || 0);
   const total = sum(ms, amt), pctTotal = r2(ms.reduce((s, m) => s + (Number(m.pct) || 0), 0));
   if (!ms.length) errs.push('Add at least one milestone.');
-  ms.forEach(m => { if (!String(m.name || '').trim()) errs.push(`${m.code}: milestone name is required.`); if (!(amt(m) > 0)) errs.push(`${m.code}: amount must be greater than zero.`); });
+  if (!(poValue > 0)) errs.push('PO value is AED 0 — enter the line items (step 2) before building the schedule.');
+  ms.forEach((m, i) => { const c = m.code || 'M' + (i + 1); if (!String(m.name || '').trim()) errs.push(`${c}: milestone name is required.`); if (poValue > 0 && !(amt(m) > 0)) errs.push(`${c}: amount must be greater than zero.`); });
   if (total > poValue + EPS) errs.push(`Schedule total ${money(total)} exceeds the PO value ${money(poValue)} by ${money(total - poValue)}.`);
   else if (mode === 'percent' && Math.abs(pctTotal - 100) > 0.0001) errs.push(`Percentage schedule totals ${fmtNum(pctTotal)}% — it must total exactly 100% of the PO value.`);
   else if (mode === 'fixed' && Math.abs(total - poValue) > EPS && !(exception && exception.allow && String(exception.note || '').trim())) errs.push(`Fixed-amount schedule totals ${money(total)} but the PO value is ${money(poValue)}. Balance ${money(poValue - total)} — fix the amounts or record an explicit exception with a reason.`);

@@ -8,6 +8,7 @@ const INV_STATUSES = ['Draft', 'Submitted', 'Pending Matching', 'Matching Failed
 /* ================================================================ list */
 ROUTES.invoices = () => `<div>${pageHead({ title: 'Supplier Invoices', crumbs: [['Supplier Invoices']], right: gbtn('inv.create', 'go', 'Create Invoice', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/invoice/new' } }) })}
   <div class="content">${listHtml('invoices', {
+    pills: { name: 'status', values: ["Draft","Matching Failed","Pending Approval","Approved","Posted","Paid","Rejected","Cancelled"], get: i => i.status },
     searchPh: 'Search invoice, supplier invoice no., PO…', dates: true,
     filters: [{ name: 'status', label: 'Status', options: () => INV_STATUSES }, { name: 'method', label: 'Billing method', options: () => ['Standard', 'Progressive', 'Milestone'] }, { name: 'supplier', label: 'Supplier', options: () => supOpts() }, { name: 'po', label: 'PO', options: () => db.pos.filter(p => invsOf(p).length).map(p => [p.id, p.number]) }],
     rows: () => db.invoices.slice().sort((a, b) => b.seq - a.seq),

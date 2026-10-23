@@ -7,6 +7,7 @@ const poOptLabel = p => `${p.number} — ${getSup(p.supplierId).name} (${p.billi
 /* ================================================================ GRN */
 ROUTES.grns = () => `<div>${pageHead({ title: 'Goods Receipts (GRN)', crumbs: [['Goods Receipts']], right: gbtn('grn.create', 'go', 'Create GRN', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/grn/new' } }) })}
   <div class="content">${listHtml('grns', {
+    pills: { name: 'status', values: ["Draft","Submitted","Pending Inspection","Accepted","Partially Accepted","Rejected"], get: g => g.status },
     searchPh: 'Search GRN, PO, supplier…',
     filters: [{ name: 'status', label: 'Status', options: () => ['Draft', 'Submitted', 'Pending Inspection', 'Accepted', 'Partially Accepted', 'Rejected'] }, { name: 'po', label: 'PO', options: () => db.pos.filter(p => grnsOf(p).length || p.lines.some(l => l.receiptType === 'Goods')).map(p => [p.id, p.number]) }],
     rows: () => db.grns.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.seq - a.seq),
@@ -96,6 +97,7 @@ ACT['grn-inspect'] = el => { const g = getGRN(el.dataset.id); openModal({ title:
 /* ================================================================ SRN */
 ROUTES.srns = () => `<div>${pageHead({ title: 'Service Receipts (SRN)', crumbs: [['Service Receipts']], right: gbtn('srn.create', 'go', 'Create SRN', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/srn/new' } }) })}
   <div class="content">${listHtml('srns', {
+    pills: { name: 'status', values: ["Draft","Pending Acceptance","Accepted","Partially Accepted","Rejected"], get: s => s.status },
     searchPh: 'Search SRN, PO, supplier…',
     filters: [{ name: 'status', label: 'Status', options: () => ['Draft', 'Pending Acceptance', 'Accepted', 'Partially Accepted', 'Rejected'] }, { name: 'po', label: 'PO', options: () => db.pos.filter(p => p.lines.some(l => l.receiptType === 'Services')).map(p => [p.id, p.number]) }],
     rows: () => db.srns.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.seq - a.seq),

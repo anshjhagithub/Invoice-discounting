@@ -16,6 +16,7 @@ const EXAMPLE_SCHEDULE = () => [
 /* ---------------------------------------------------------------- list */
 ROUTES.pos = () => `<div>${pageHead({ title: 'Purchase Orders', crumbs: [['Purchase Orders']], right: gbtn('po.edit', 'po-new', 'Create PO', { cls: 'btn-primary', icn: 'plus' }) })}
   <div class="content">${listHtml('pos', {
+    pills: { name: 'status', values: ["Draft","Pending Approval","Approved","Rejected"], get: p => p.status },
     searchPh: 'Search PO number, supplier, line…', defaults: {},
     filters: [
       { name: 'status', label: 'Status', options: () => ['Draft', 'Pending Approval', 'Approved', 'Rejected'] },
@@ -40,7 +41,13 @@ ROUTES.po = r => {
 /* ---------------------------------------------------------------- create / edit wizard */
 function blankLine(cat) { return { code: '', desc: '', qty: 1, uom: cat === 'Goods' ? 'Units' : 'Lot', price: 0, taxCode: 'VAT5', location: LOCATIONS[0], receiptType: cat === 'Goods' ? 'Goods' : 'Services' }; }
 function poDraftFrom(po) {
-  if (!po) return { id: null, supplierId: 'sup1', buyer: 'DICE Manufacturing LLC', poDate: todayISO(), deliveryDate: daysFromNow(60), terms: 'Net 30', category: 'Goods', billingMethod: '', progressBasis: 'Receipt', requireSrn: false, partialMilestone: false, overReceiptPct: 0, lines: [blankLine('Goods')], scheduleMode: 'percent', scheduleException: { allow: false, note: '' }, scheduleFinal: false, milestones: [], step: 1 };
+  if (!po) { const d = poDraftBlank(); if (ui.r.q.method === 'Milestone') { d.billingMethod = 'Milestone'; d.milestones = EXAMPLE_SCHEDULE(); } else if (['Standard', 'Progressive'].includes(ui.r.q.method)) d.billingMethod = ui.r.q.method; return d; }
+  return poDraftExisting(po);
+}
+function poDraftBlank() {
+  return { id: null, supplierId: 'sup1', buyer: 'DICE Manufacturing LLC', poDate: todayISO(), deliveryDate: daysFromNow(60), terms: 'Net 30', category: 'Goods', billingMethod: '', progressBasis: 'Receipt', requireSrn: false, partialMilestone: false, overReceiptPct: 0, lines: [blankLine('Goods')], scheduleMode: 'percent', scheduleException: { allow: false, note: '' }, scheduleFinal: false, milestones: [], step: +ui.r.q.step || 1 };
+}
+function poDraftExisting(po) {
   return { id: po.id, supplierId: po.supplierId, buyer: po.buyer, poDate: po.poDate, deliveryDate: po.deliveryDate, terms: po.terms, category: po.category, billingMethod: po.billingMethod, progressBasis: po.progressBasis, requireSrn: po.requireSrn, partialMilestone: po.partialMilestone, overReceiptPct: po.overReceiptPct || 0,
     lines: po.lines.map(l => ({ ...l })), scheduleMode: po.scheduleMode || 'percent', scheduleException: { ...(po.scheduleException || { allow: false, note: '' }) }, scheduleFinal: po.scheduleStatus === 'Final', step: +ui.r.q.step || 1, milestones: msOf(po).map(m => ({ ...m })) };
 }
@@ -56,7 +63,7 @@ function poForm(r, po) {
   <div class="content">
     <div class="stepper">${steps.map((s, i) => `<button class="step ${f.step === i + 1 ? 'on' : f.step > i + 1 ? 'done' : ''}" data-act="po-step" data-n="${i + 1}"><span class="n">${f.step > i + 1 ? '✓' : i + 1}</span>${s}</button>`).join('')}</div>
     <div style="margin-top:14px">${body}</div>
-    <div class="form-actions">
+    <div class="sticky-bar">
       ${f.step > 1 ? actBtn('po-step', 'Back', { cls: 'btn-outline', data: { n: f.step - 1 } }) : ''}<span class="spacer"></span>
       ${actBtn('po-save', 'Save as Draft', { cls: 'btn-outline' })}
       ${f.step < 4 ? actBtn('po-step', 'Next', { cls: 'btn-primary', data: { n: f.step + 1 } }) : actBtn('po-submit', 'Submit for Approval', { cls: 'btn-primary', icn: 'check' })}
@@ -64,7 +71,7 @@ function poForm(r, po) {
 }
 ACT['po-step'] = el => { ui.f.step = +el.dataset.n; render(); };
 ACT['po-save'] = () => done(A.savePO(ui.f, false), r => { ui.f = null; go(`#/po/${r.id}`); });
-ACT['po-submit'] = () => done(A.savePO(ui.f, true), r => { ui.f = null; go(`#/po/${r.id}`); });
+ACT['po-submit'] = () => { const f = ui.f; if (f.billingMethod === 'Milestone' && !f.scheduleFinal && scheduleCheck(f.milestones, fVal(f), f.scheduleMode, f.scheduleException).ok) f.scheduleFinal = true; done(A.savePO(f, true), r => { ui.f = null; go(`#/po/${r.id}`); }); };
 HOOKS.category = (el, v) => { const f = ui.f; f.lines.forEach(l => { l.receiptType = v === 'Goods' ? 'Goods' : 'Services'; if (l.uom === 'Units' && v !== 'Goods') l.uom = 'Lot'; }); f.requireSrn = v !== 'Goods'; f.milestones.forEach(m => m.srnRequired = f.requireSrn); };
 
 function stepHeader(f, nextNo) {
@@ -130,43 +137,72 @@ function progressiveConfig(f) {
 }
 ACT['po-basis'] = el => { ui.f.progressBasis = el.dataset.b; render(); };
 
+const MS_COLORS = ['#6C5DD3', '#3FA36B', '#E0A030', '#2E7DBA', '#B0285A', '#7B5BA8', '#3E8E95', '#C2583A'];
+function msRemaining(f) {
+  const v = fVal(f);
+  return f.scheduleMode === 'percent' ? r2(100 - f.milestones.reduce((s, m) => s + (+m.pct || 0), 0)) : r2(v - f.milestones.reduce((s, m) => s + (+m.amount || 0), 0));
+}
 function milestoneConfig(f) {
   const val = fVal(f), chk = scheduleCheck(f.milestones, val, f.scheduleMode, f.scheduleException), lock = f.scheduleFinal, dis = lock ? 'disabled' : '';
-  const rows = f.milestones.map((m, i) => `<tr>
-    <td class="strong nowrap">M${i + 1}</td>
-    <td><input class="input sm" style="min-width:150px" ${dis} data-f="milestones.${i}.name" value="${esc(m.name)}" placeholder="Milestone name"></td>
-    <td>${f.scheduleMode === 'percent' ? `<input class="input sm num" style="width:70px" type="number" step="any" min="0" ${dis} data-t="num" data-f="milestones.${i}.pct" value="${m.pct}"> %` : `<input class="input sm num" style="width:110px" type="number" step="any" min="0" ${dis} data-t="num" data-f="milestones.${i}.amount" value="${m.amount}">`}</td>
-    <td class="num strong" id="ms-amt-${i}">${money(chk.amt(m))}</td>
-    <td><input class="input sm" type="date" ${dis} data-f="milestones.${i}.planned" value="${esc(m.planned || '')}"></td>
-    <td><select class="input sm" ${dis} data-f="milestones.${i}.approver">${opt(APPROVERS_LIST, m.approver)}</select></td>
-    <td><label class="check-row"><input type="checkbox" ${dis} data-f="milestones.${i}.srnRequired" ${m.srnRequired ? 'checked' : ''}> SRN</label></td>
-    <td><span class="badge-s s-gray">Draft</span></td>
-    <td class="act nowrap">${lock ? `<span class="lock">${icon('lock', 11)}</span>` : `<button class="kebab" data-act="ms-up" data-i="${i}" ${i === 0 ? 'disabled' : ''} title="Move up">${icon('up', 12)}</button><button class="kebab" data-act="ms-down" data-i="${i}" ${i === f.milestones.length - 1 ? 'disabled' : ''} title="Move down">${icon('down', 12)}</button><button class="kebab" data-act="ms-del" data-i="${i}" title="Remove">${icon('trash', 12)}</button>`}</td></tr>
-    <tr><td></td><td colspan="8" style="padding-top:0"><div class="fgrid" style="gap:8px">
-      <div class="field"><label>Description</label><input class="input sm" ${dis} data-f="milestones.${i}.description" value="${esc(m.description || '')}"></div>
-      <div class="field"><label>Acceptance criteria</label><input class="input sm" ${dis} data-f="milestones.${i}.criteria" value="${esc(m.criteria || '')}"></div>
-      <div class="field"><label>Required supporting evidence</label><input class="input sm" ${dis} data-f="milestones.${i}.evidenceReq" value="${esc(m.evidenceReq || '')}"></div></div></td></tr>`).join('');
+  const cards = f.milestones.map((m, i) => `<div class="ms-card ${lock ? 'locked' : ''}">
+    <div class="ms-head"><span class="ms-id" style="background:${MS_COLORS[i % MS_COLORS.length]}">M${i + 1}</span>
+      <input class="input ms-name" ${dis} data-f="milestones.${i}.name" value="${esc(m.name)}" placeholder="Milestone name, e.g. Design approval">
+      <div class="ms-val">${f.scheduleMode === 'percent'
+        ? `<input class="input num" type="number" step="any" min="0" ${dis} data-t="num" data-f="milestones.${i}.pct" value="${m.pct}"><span class="ms-unit">%</span>`
+        : `<span class="ms-unit">AED</span><input class="input num" style="width:120px" type="number" step="any" min="0" ${dis} data-t="num" data-f="milestones.${i}.amount" value="${m.amount}">`}</div>
+      <div class="ms-calc"><b id="ms-amt-${i}">${money(chk.amt(m))}</b><span id="ms-pct-${i}">${val ? fmtNum(r2(chk.amt(m) / val * 100)) : 0}% of PO</span></div>
+      <div class="ms-actions">${lock ? `<span class="lock">${icon('lock', 12)}</span>` : `<button class="kebab" data-act="ms-up" data-i="${i}" ${i === 0 ? 'disabled' : ''} title="Move up">${icon('up', 12)}</button><button class="kebab" data-act="ms-down" data-i="${i}" ${i === f.milestones.length - 1 ? 'disabled' : ''} title="Move down">${icon('down', 12)}</button><button class="kebab" data-act="ms-del" data-i="${i}" title="Remove milestone">${icon('trash', 12)}</button>`}</div></div>
+    <div class="ms-body">
+      <div class="field"><label>Planned completion</label><input class="input sm" type="date" ${dis} data-f="milestones.${i}.planned" value="${esc(m.planned || '')}"></div>
+      <div class="field"><label>Approver</label><select class="input sm" ${dis} data-f="milestones.${i}.approver">${opt(APPROVERS_LIST, m.approver)}</select></div>
+      <div class="field"><label>Accepted SRN required?</label><label class="check-row"><input type="checkbox" ${dis} data-f="milestones.${i}.srnRequired" ${m.srnRequired ? 'checked' : ''}> Yes, gate invoicing on an SRN</label></div>
+      <div class="field"><label>Status</label><div class="ro">Draft — locked until PO approval</div></div>
+      <div class="field span2"><label>Description</label><input class="input sm" ${dis} data-f="milestones.${i}.description" value="${esc(m.description || '')}" placeholder="What is delivered?"></div>
+      <div class="field"><label>Acceptance criteria</label><input class="input sm" ${dis} data-f="milestones.${i}.criteria" value="${esc(m.criteria || '')}" placeholder="How is it accepted?"></div>
+      <div class="field"><label>Required supporting evidence</label><input class="input sm" ${dis} data-f="milestones.${i}.evidenceReq" value="${esc(m.evidenceReq || '')}" placeholder="Certificates, reports…"></div>
+    </div></div>`).join('');
   return `<div class="method-banner milestone"><div class="ic">${icon('flag', 14)}</div><div><b>Milestone billing</b> — invoice eligibility comes from the <b>amount allocated to an approved contractual milestone</b>. A milestone is never billable just because its planned date passed.</div></div>
-  <div class="card pad0" style="margin-top:12px"><div style="padding:14px 14px 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3 style="margin:0">Milestone schedule</h3>${lock ? `<span class="badge-s s-green">${icon('lock', 10)}&nbsp;Finalized</span>` : '<span class="badge-s s-amber">Draft schedule</span>'}<span class="spacer"></span>
-    <div class="row"><label class="check-row"><input type="radio" name="smode" ${f.scheduleMode === 'percent' ? 'checked' : ''} ${dis} data-act="ms-mode" data-m="percent"> Percentage of PO value</label><label class="check-row"><input type="radio" name="smode" ${f.scheduleMode === 'fixed' ? 'checked' : ''} ${dis} data-act="ms-mode" data-m="fixed"> Fixed amounts</label></div></div>
-  <div class="table-wrap"><table class="grid compact" style="min-width:980px"><thead><tr><th>ID</th><th>Milestone name *</th><th>${f.scheduleMode === 'percent' ? 'Percentage' : 'Fixed amount (AED)'}</th><th class="right">Amount</th><th>Planned completion</th><th>Approver</th><th>Gate</th><th>Status</th><th></th></tr></thead><tbody>${rows || emptyRow(9, 'No milestones yet.')}</tbody></table></div>
-  <div id="sch-sum" style="padding:12px 14px">${scheduleSummary(f)}</div>
-  <div class="form-actions" style="margin:0;padding:10px 14px">${lock ? actBtn('ms-unlock', 'Unlock schedule (draft PO)', { icn: 'lock' }) : `${actBtn('ms-add', 'Add milestone', { icn: 'plus' })}${actBtn('ms-example', 'Load example 20 / 50 / 30 schedule')}<span class="spacer"></span>${actBtn('ms-finalize', 'Finalize schedule', { cls: 'btn-primary btn-sm', icn: 'lock' })}`}</div></div>
+  <div class="card" style="margin-top:12px">
+    <div class="row" style="margin-bottom:10px"><h3 style="margin:0">Milestone schedule</h3>${lock ? `<span class="badge-s s-green">${icon('lock', 10)}&nbsp;Finalized</span>` : '<span class="badge-s s-amber">Draft</span>'}<span class="spacer"></span>
+      <div class="seg"><button class="${f.scheduleMode === 'percent' ? 'on' : ''}" ${dis} data-act="ms-mode" data-m="percent">% of PO value</button><button class="${f.scheduleMode === 'fixed' ? 'on' : ''}" ${dis} data-act="ms-mode" data-m="fixed">Fixed amounts</button></div></div>
+    <div id="sch-bar">${scheduleBar(f)}</div>
+    <div class="ms-list">${cards || '<div class="empty-state">No milestones yet — add one or load the example schedule.</div>'}</div>
+    <div class="row" style="margin-top:12px">${lock
+      ? `${actBtn('ms-unlock', 'Unlock to edit', { icn: 'lock' })}<span class="hint">The schedule is finalized. Unlock to make changes before the PO is approved.</span>`
+      : `${actBtn('ms-add', 'Add milestone', { icn: 'plus', cls: 'btn-outline' })}${actBtn('ms-even', 'Split evenly')}${actBtn('ms-balance', 'Balance last milestone to total')}${actBtn('ms-example', 'Load example 20 / 50 / 30')}<span class="spacer"></span>${actBtn('ms-finalize', 'Finalize schedule', { cls: 'btn-primary', icn: 'lock' })}`}</div>
+    <div id="sch-sum" style="margin-top:12px">${scheduleSummary(f)}</div></div>
   <div class="card" style="margin-top:12px"><h3>Billing rules</h3><div class="fgrid c2">
-    <div class="field"><label class="check-row"><input type="checkbox" data-f="requireSrn" data-r data-hook="reqsrn" ${f.requireSrn ? 'checked' : ''}> Require accepted SRN before milestones are invoice-eligible (default for all milestones)</label><div class="fhint">The milestone (contractual deliverable) and the SRN (service receipt) stay separate records; acceptance of one never creates or approves the other. Can be overridden per milestone above.</div></div>
-    <div class="field"><label class="check-row"><input type="checkbox" data-f="partialMilestone" data-r ${f.partialMilestone ? 'checked' : ''}> Allow partial milestone billing</label><div class="fhint">Off (default for this release): one invoice per milestone, for the full milestone amount.</div></div>
-    ${f.scheduleMode === 'fixed' ? `<div class="field span2"><label class="check-row"><input type="checkbox" data-f="scheduleException.allow" data-r ${f.scheduleException.allow ? 'checked' : ''}> Explicit exception: fixed schedule may total less than the PO value</label>${f.scheduleException.allow ? `<input class="input" style="margin-top:6px" data-f="scheduleException.note" placeholder="Reason for the exception (required)" value="${esc(f.scheduleException.note)}">` : ''}</div>` : ''}
+    <div class="field"><label class="check-row"><input type="checkbox" data-f="requireSrn" data-r data-hook="reqsrn" ${f.requireSrn ? 'checked' : ''}> Require an accepted SRN before milestones are invoice-eligible</label><div class="fhint">Applies to every milestone (overridable per milestone above). The milestone and the SRN stay separate records; accepting one never approves the other.</div></div>
+    <div class="field"><label class="check-row"><input type="checkbox" data-f="partialMilestone" data-r ${f.partialMilestone ? 'checked' : ''}> Allow partial milestone billing</label><div class="fhint">Off (default): one invoice per milestone, for its full amount.</div></div>
+    ${f.scheduleMode === 'fixed' ? `<div class="field span2"><label class="check-row"><input type="checkbox" data-f="scheduleException.allow" data-r ${f.scheduleException.allow ? 'checked' : ''}> Exception: allow the fixed schedule to total less than the PO value</label>${f.scheduleException.allow ? `<input class="input" style="margin-top:6px" data-f="scheduleException.note" placeholder="Reason for the exception (required)" value="${esc(f.scheduleException.note)}">` : ''}</div>` : ''}
   </div></div>`;
 }
-HOOKS.reqsrn = (el, v) => { ui.f.milestones.forEach(m => m.srnRequired = v); };
+function scheduleBar(f) {
+  const val = fVal(f), chk = scheduleCheck(f.milestones, val, f.scheduleMode, f.scheduleException);
+  const segs = f.milestones.map((m, i) => { const p = val ? chk.amt(m) / val * 100 : 0; return `<span title="M${i + 1} · ${fmtNum(r2(p))}%" style="width:${Math.max(0, Math.min(100, p)).toFixed(2)}%;background:${MS_COLORS[i % MS_COLORS.length]}">${p >= 9 ? `M${i + 1} · ${fmtNum(r2(p))}%` : ''}</span>`; }).join('');
+  const total = val ? chk.total / val * 100 : 0;
+  return `<div class="alloc-bar ${total > 100.0001 ? 'over' : ''}">${segs}</div><div class="alloc-meta"><span>${money(chk.total)} of ${money(val)} allocated</span><span class="${Math.abs(total - 100) < 0.0001 ? 'ok-t' : total > 100 ? 'bad-t' : 'warn-t'}">${fmtNum(r2(total))}%${total < 99.9999 ? ` · ${fmtNum(r2(100 - total))}% unallocated` : total > 100.0001 ? ` · ${fmtNum(r2(total - 100))}% over` : ' · fully allocated'}</span></div>`;
+}
 function scheduleSummary(f) {
   const val = fVal(f), chk = scheduleCheck(f.milestones, val, f.scheduleMode, f.scheduleException);
-  return `<div class="row" style="gap:22px"><div><div class="hint">Schedule total</div><div class="strong" style="font-size:15px">${money(chk.total)}${f.scheduleMode === 'percent' ? ` <span class="${Math.abs(chk.pctTotal - 100) < 0.0001 ? 'ok-t' : 'bad-t'}" style="font-size:12px">· ${fmtNum(chk.pctTotal)}%</span>` : ''}</div></div>
-    <div><div class="hint">PO value</div><div class="strong" style="font-size:15px">${money(val)}</div></div>
-    <div><div class="hint">Difference</div><div class="strong ${Math.abs(val - chk.total) < EPS ? 'ok-t' : 'bad-t'}" style="font-size:15px">${money(r2(val - chk.total))}</div></div></div>
-    ${chk.ok ? alertBox('ok', '', 'Schedule is valid' + (f.scheduleMode === 'percent' ? ' — totals exactly 100% of the PO value.' : ' — fixed amounts equal the PO value.')) : alertBox('err', 'Schedule cannot be finalized', errList(chk.errors))}`;
+  return chk.ok ? alertBox('ok', f.scheduleFinal ? 'Schedule finalized' : 'Schedule is valid', f.scheduleFinal ? 'Locked. It will be sent for approval with the PO.' : 'Totals match the PO value. It will be finalized automatically when you submit the PO.')
+    : alertBox('err', 'Fix before finalizing', errList(chk.errors));
 }
-ACT['ms-add'] = () => { const f = ui.f; f.milestones.push({ name: '', description: '', pct: 0, amount: 0, planned: '', criteria: '', evidenceReq: '', approver: 'Procurement Manager', srnRequired: f.requireSrn }); render(); };
+ACT['ms-add'] = () => { const f = ui.f, rem = Math.max(0, msRemaining(f)); f.milestones.push({ name: '', description: '', pct: f.scheduleMode === 'percent' ? rem : 0, amount: f.scheduleMode === 'fixed' ? rem : 0, planned: '', criteria: '', evidenceReq: '', approver: 'Procurement Manager', srnRequired: f.requireSrn }); render(); };
+ACT['ms-even'] = () => {
+  const f = ui.f, n = f.milestones.length; if (!n) return toast('Add milestones first', 'err');
+  const total = f.scheduleMode === 'percent' ? 100 : fVal(f), each = r2(total / n); let used = 0;
+  f.milestones.forEach((m, i) => { const v = i === n - 1 ? r2(total - used) : each; used = r2(used + v); if (f.scheduleMode === 'percent') m.pct = v; else m.amount = v; });
+  render();
+};
+ACT['ms-balance'] = () => {
+  const f = ui.f, n = f.milestones.length; if (!n) return toast('Add milestones first', 'err');
+  const last = f.milestones[n - 1], others = f.milestones.slice(0, -1);
+  if (f.scheduleMode === 'percent') last.pct = r2(100 - others.reduce((s, m) => s + (+m.pct || 0), 0)); else last.amount = r2(fVal(f) - others.reduce((s, m) => s + (+m.amount || 0), 0));
+  render();
+};
+
+HOOKS.reqsrn = (el, v) => { ui.f.milestones.forEach(m => m.srnRequired = v); };
 ACT['ms-del'] = el => { ui.f.milestones.splice(+el.dataset.i, 1); render(); };
 ACT['ms-up'] = el => { const a = ui.f.milestones, i = +el.dataset.i; [a[i - 1], a[i]] = [a[i], a[i - 1]]; render(); };
 ACT['ms-down'] = el => { const a = ui.f.milestones, i = +el.dataset.i; [a[i + 1], a[i]] = [a[i], a[i + 1]]; render(); };
@@ -176,9 +212,9 @@ ACT['ms-finalize'] = () => { const f = ui.f, chk = scheduleCheck(f.milestones, f
 ACT['ms-unlock'] = () => { ui.f.scheduleFinal = false; render(); };
 
 function stepReview(f, nextNo) {
-  const v = fVal(f), errs = validatePO(f, true), sup = getSup(f.supplierId);
+  const v = fVal(f), errs = validatePO({ ...f, scheduleFinal: true }, true), sup = getSup(f.supplierId);
   return `<div class="card"><h3>Review ${esc(nextNo)}</h3><div class="kvg">${kv('Supplier', esc(sup.name) + ` <span class="hint">${sup.code}</span>`)}${kv('Buyer entity', esc(f.buyer))}${kv('Category', esc(f.category))}${kv('PO date', fmtD(f.poDate))}${kv('Delivery date', fmtD(f.deliveryDate))}${kv('Payment terms', esc(f.terms))}${kv('PO value (net)', `<b>${money(v)}</b>`)}${kv('Billing method', f.billingMethod ? mb(f.billingMethod) + (f.billingMethod === 'Progressive' ? ` <span class="hint">${f.progressBasis === 'Certified' ? 'Certified work progress' : 'Accepted receipts'}</span>` : '') : '<span class="bad-t">Not selected</span>')}${kv('Lines', f.lines.length)}</div></div>
-  ${f.billingMethod === 'Milestone' ? `<div class="card" style="margin-top:12px"><h3>Milestone schedule ${f.scheduleFinal ? '<span class="badge-s s-green">Finalized</span>' : '<span class="badge-s s-amber">Not finalized</span>'}</h3><table class="grid compact"><thead><tr><th>ID</th><th>Name</th><th class="right">Amount</th><th class="right">%</th><th>Planned</th><th>SRN gate</th></tr></thead><tbody>${f.milestones.map((m, i) => `<tr><td class="strong">M${i + 1}</td><td>${esc(m.name)}</td><td class="num">${fmtNum(scheduleCheck(f.milestones, v, f.scheduleMode, f.scheduleException).amt(m))}</td><td class="num">${v ? fmtNum(r2(scheduleCheck(f.milestones, v, f.scheduleMode).amt(m) / v * 100)) : 0}%</td><td>${fmtD(m.planned)}</td><td>${m.srnRequired ? 'Accepted SRN required' : '—'}</td></tr>`).join('')}</tbody></table></div>` : ''}
+  ${f.billingMethod === 'Milestone' ? `<div class="card" style="margin-top:12px"><h3>Milestone schedule ${f.scheduleFinal ? '<span class="badge-s s-green">Finalized</span>' : '<span class="badge-s s-amber">Finalized automatically on submit</span>'}</h3><table class="grid compact"><thead><tr><th>ID</th><th>Name</th><th class="right">Amount</th><th class="right">%</th><th>Planned</th><th>SRN gate</th></tr></thead><tbody>${f.milestones.map((m, i) => `<tr><td class="strong">M${i + 1}</td><td>${esc(m.name)}</td><td class="num">${fmtNum(scheduleCheck(f.milestones, v, f.scheduleMode, f.scheduleException).amt(m))}</td><td class="num">${v ? fmtNum(r2(scheduleCheck(f.milestones, v, f.scheduleMode).amt(m) / v * 100)) : 0}%</td><td>${fmtD(m.planned)}</td><td>${m.srnRequired ? 'Accepted SRN required' : '—'}</td></tr>`).join('')}</tbody></table></div>` : ''}
   ${errs.length ? alertBox('err', 'Resolve before submitting for approval', errList(errs)) : alertBox('ok', 'Ready to submit', 'All required fields are valid. Only approved POs become available for GRN, SRN and invoice selection.')}`;
 }
 function poDerive() {
@@ -188,7 +224,7 @@ function poDerive() {
   const t = $('#ln-total'); if (t) t.textContent = fmtNum(fVal(f));
   if (f.billingMethod === 'Milestone' && f.step === 3) {
     const chk = scheduleCheck(f.milestones, fVal(f), f.scheduleMode, f.scheduleException);
-    f.milestones.forEach((m, i) => { const e = $('#ms-amt-' + i); if (e) e.textContent = money(chk.amt(m)); });
+    const vv = fVal(f); f.milestones.forEach((m, i) => { const e = $('#ms-amt-' + i); if (e) e.textContent = money(chk.amt(m)); const p = $('#ms-pct-' + i); if (p) p.textContent = (vv ? fmtNum(r2(chk.amt(m) / vv * 100)) : 0) + '% of PO'; }); const bar = $('#sch-bar'); if (bar) bar.innerHTML = scheduleBar(f);
     const s = $('#sch-sum'); if (s) s.innerHTML = scheduleSummary(f);
   }
 }
@@ -269,7 +305,7 @@ function milestoneTable(po, s) {
   const ms = msOf(po), locked = po.scheduleStatus === 'Final';
   const tot = sum(ms, m => m.amount), appr = sum(ms, m => msEnt(m, po)), inv = sum(ms, m => usage('milestone', m.id).value);
   return `${strip([['Schedule', locked ? 'Finalized &amp; locked' : 'Draft', po.partialMilestone ? 'partial billing on' : 'one invoice per milestone'], ['Schedule total', money(tot), `${fmtNum(sum(ms, m => m.pct))}% of PO`], ['Invoice-eligible (approved)', money(appr)], ['Invoiced', money(inv)], ['Remaining eligible now', money(s.remaining), 'approved − invoiced', 'hl']])}
-  <div class="sec-title">Milestone schedule <span class="sub">Click a milestone to open its detail drawer</span><span class="spacer"></span>${po.status === 'Approved' ? gbtn('po.amend', 'po-amend', 'Amend schedule', { data: { id: po.id }, icn: 'edit' }) : ''}</div>
+  <div class="sec-title">Milestone schedule <span class="sub">Click a milestone to open its detail drawer</span><span class="spacer"></span>${po.status === 'Draft' ? gbtn('po.edit', 'go', 'Edit schedule', { data: { hash: `#/po/${po.id}/edit?step=3` }, icn: 'edit', cls: 'btn-primary btn-sm' }) : ''}${po.status === 'Pending Approval' ? gbtn('po.edit', 'po-reopen', 'Return to draft to edit', { data: { id: po.id } }) : ''}${po.status === 'Approved' ? gbtn('po.amend', 'po-amend', 'Amend schedule', { data: { id: po.id }, icn: 'edit' }) : ''}</div>
   <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>ID</th><th>Name</th><th class="right">Amount</th><th>Completion status</th><th>Approval status</th><th>Linked SRN</th><th class="right">Invoiced</th><th class="right">Remaining balance</th><th>Linked invoice</th><th>Billing</th></tr></thead><tbody>
   ${ms.map(m => { const u = usage('milestone', m.id), g = msGate(m, po), sr = m.srnId && getSRN(m.srnId), bill = msBilling(m, po);
     const completion = m.status === 'Approved' ? 'Completed' : m.status === 'Submitted for Acceptance' ? 'Submitted' : m.status === 'Draft' ? 'Draft' : 'Not completed';

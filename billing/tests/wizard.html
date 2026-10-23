@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><title>wizard</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
+<div class="app"><aside id="sidebar" class="sidebar"></aside><main id="main" class="main"></main></div><div id="toasts" class="toast-stack"></div><pre id="out">running…</pre>
+<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
+<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script><script src="../js/boot.js"></script>
+<script>
+/* Real-event test of the milestone PO wizard: types into inputs, clicks buttons. */
+const log = [], flush = () => { document.getElementById('out').textContent = log.join('\n'); };
+const T = (n, ok, extra) => { log.push((ok ? 'PASS ' : 'FAIL ') + n + (ok ? '' : ' :: ' + (extra || ''))); flush(); };
+window.addEventListener('error', e => { log.push('ERR ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); flush(); });
+const $q = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const type = (el, v) => { el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+const click = el => { if (!el) throw new Error('click: element missing'); el.click(); };
+const byText = (sel, t) => $$(sel).find(b => b.textContent.trim().includes(t));
+const modal = () => document.querySelector('.overlay')?.textContent || '';
+try { localStorage.clear(); } catch (e) {}
+seedDb('default'); location.hash = '#/po/new'; render();
+// step 1/2
+type($q('[data-f="category"]'), 'Services'); T('category change rerenders', $q('[data-f="category"]').value === 'Services');
+click(byText('.step', 'Line items'));
+type($q('[data-f="lines.0.desc"]'), 'Wizard Test Project'); type($q('[data-f="lines.0.qty"]'), '1'); type($q('[data-f="lines.0.price"]'), '200000');
+T('line net shows 200,000', $q('#ln-net-0').textContent.includes('200,000'), $q('#ln-net-0').textContent);
+click(byText('.btn', 'Next')); T('on billing step', ui.f.step === 3);
+click(byText('.rcard', 'Milestone Billing')); T('milestone chosen & example schedule loaded', ui.f.billingMethod === 'Milestone' && ui.f.milestones.length === 3, JSON.stringify(ui.f.milestones.length));
+T('amounts computed from 200,000', $q('#ms-amt-0').textContent.includes('40,000'), $q('#ms-amt-0').textContent);
+// edit percentages by typing
+type($q('[data-f="milestones.0.pct"]'), '30'); T('typing keeps the input in the DOM and updates total', $q('#sch-sum').textContent.includes('Percentage schedule totals 110%') || $q('#sch-sum').textContent.includes('exceeds'), $q('#sch-sum').textContent.slice(0, 160));
+type($q('[data-f="milestones.1.pct"]'), '40'); T('valid at 100%', $q('#sch-sum').textContent.includes('Schedule is valid'), $q('#sch-sum').textContent.slice(0, 200));
+type($q('[data-f="milestones.0.name"]'), 'Survey & Design'); T('name edit kept', ui.f.milestones[0].name === 'Survey & Design');
+click(byText('.btn', 'Add milestone')); T('added milestone row', ui.f.milestones.length === 4);
+click($$('[data-act="ms-del"]').pop()); T('removed milestone row', ui.f.milestones.length === 3);
+click($$('[data-act="ms-down"]')[0]); T('reorder via click', ui.f.milestones[1].name === 'Survey & Design', ui.f.milestones.map(m => m.name).join('|'));
+click($$('[data-act="ms-up"]')[1]);
+click(byText('.btn', 'Balance last')); T('balance last button works', Math.abs(ui.f.milestones.reduce((a,m)=>a+m.pct,0)-100)<0.001); click(byText('.btn', 'Split evenly')); T('split evenly totals 100', Math.abs(ui.f.milestones.reduce((a,m)=>a+m.pct,0)-100)<0.001, JSON.stringify(ui.f.milestones.map(m=>m.pct))); type($q('[data-f="milestones.0.pct"]'),'30'); type($q('[data-f="milestones.1.pct"]'),'40'); type($q('[data-f="milestones.2.pct"]'),'30'); click(byText('.btn', 'Finalize schedule')); T('finalize via click', ui.f.scheduleFinal === true, modal());
+T('inputs locked after finalize', $q('[data-f="milestones.0.pct"]').disabled);
+click(byText('.btn', 'Next')); T('review step', ui.f.step === 4);
+log.push('DBG pcts=' + JSON.stringify(ui.f.milestones.map(m=>[m.name,m.pct,m.amount])) + ' mode=' + ui.f.scheduleMode + ' val=' + fVal(ui.f)); click(byText('.btn', 'Submit for Approval')); T('PO submitted & navigated', location.hash.startsWith('#/po/po') && db.pos.find(p => p.lines[0].desc === 'Wizard Test Project')?.status === 'Pending Approval', location.hash + ' ' + modal());
+const po = db.pos.find(p => p.lines[0].desc === 'Wizard Test Project'); log.push('DBG po=' + JSON.stringify([po.status, po.lines.map(l=>[l.qty,l.price]), msOf(po).map(m=>[m.name,m.pct,m.amount])]));
+T('3 milestones saved with amounts', po && msOf(po).length === 3 && sum(msOf(po), m => m.amount) === 200000, po && JSON.stringify(msOf(po).map(m => m.amount)));
+// approve then milestone flow
+click(byText('.btn', 'Approve')); submitModal = () => document.querySelector('.overlay form').requestSubmit(); submitModal();
+T('PO approved, milestones pending', po.status === 'Approved' && msOf(po).every(m => m.status === 'Pending Acceptance'));
+click(byText('.tab', 'Billing Schedule')); render(); T('billing tab lists milestones', $$('[data-act="ms-drawer"]').length === 3);
+click($$('[data-act="ms-drawer"]')[0]); T('drawer opens', !!$q('.drawer'));
+click($q('.drawer [data-act="go"]')); render(); T('open full page', location.hash.startsWith('#/milestone/'), location.hash);
+type($q('[data-f="remarks"]'), 'Done'); click(byText('.btn', 'Add sample file')); T('sample evidence attached', ui.f.evidence.length === 1);
+click(byText('.btn', 'Mark as Submitted for Acceptance')); T('milestone submitted', msOf(po)[0].status === 'Submitted for Acceptance', modal());
+click(byText('.btn', 'Approve Milestone')); submitModal(); T('milestone approved (SRN gate due to Services category)', msOf(po)[0].status === 'Approved');
+T('milestone page shows SRN blocking', document.getElementById('main').textContent.includes('Required — not linked') || document.getElementById('main').textContent.includes('none linked'), '');
+// auto-finalize on submit + method preselect
+location.hash = '#/po/new?method=Milestone'; render(); T('method param preselects milestone & example schedule', ui.f.billingMethod === 'Milestone' && ui.f.milestones.length === 3);
+type($q('[data-f="category"]'), 'Goods'); ui.f.lines[0].desc = 'Auto Final Test'; ui.f.lines[0].price = 1000; ui.f.lines[0].qty = 100; ui.f.step = 4; render();
+click(byText('.btn', 'Submit for Approval')); const po2 = db.pos.find(p => p.lines[0].desc === 'Auto Final Test'); T('submit without clicking Finalize auto-finalizes', po2 && po2.status === 'Pending Approval' && po2.scheduleStatus === 'Final', modal());
+log.push(log.some(l => !/^(PASS|DBG)/.test(l)) ? 'SOME FAILED' : 'ALL WIZARD FLOWS PASSED'); flush();
+</script></body></html>

@@ -191,7 +191,7 @@ function listState(key, q, defaults) {
 }
 function listHtml(key, cfg) {
   LISTS[key] = cfg; const st = listState(key, ui.r.q, cfg.defaults);
-  const filt = (cfg.filters || []).map(f => {
+  const filt = (cfg.filters || []).filter(f => !(cfg.pills && cfg.pills.name === f.name)).map(f => {
     const val = st[f.name] ?? '';
     const o = f.options(); if (val && !o.some(x => String(Array.isArray(x) ? x[0] : x) === String(val))) o.push([val, val.replace(/,/g, ', ')]);
     return `<select class="input" data-lf="${key}:${f.name}" title="${esc(f.label)}"><option value="">${esc(f.label)}: All</option>${opt(o, val)}</select>`;
@@ -199,8 +199,14 @@ function listHtml(key, cfg) {
   const dates = cfg.dates ? `<input class="input" type="date" data-lf="${key}:from" value="${esc(st.from || '')}" title="From date"><input class="input" type="date" data-lf="${key}:to" value="${esc(st.to || '')}" title="To date">` : '';
   const chips = (cfg.filters || []).filter(f => st[f.name]).map(f => `<span class="fchip">${esc(f.label)}: ${esc(String(st[f.name]).replace(/,/g, ', '))}<button data-act="lclear" data-key="${key}" data-name="${f.name}">${icon('x', 10, 2.4)}</button></span>`).join('');
   return `<div class="filters"><div class="search">${icon('search', 12)}<input class="input" data-lq="${key}" placeholder="${esc(cfg.searchPh || 'Search…')}" value="${esc(st.q)}"></div>${filt}${dates}${chips}<span class="spacer"></span>${cfg.right || ''}</div>
-    ${cfg.pills ? cfg.pills(st) : ''}<div id="lb-${key}">${listBody(key)}</div>`;
+    ${cfg.pills ? pillsHtml(key, cfg, st) : ''}<div id="lb-${key}">${listBody(key)}</div>`;
 }
+function pillsHtml(key, cfg, st) {
+  const p = cfg.pills, base = cfg.rows().filter(r => cfg.match(r, { ...st, [p.name]: '' })), cnt = v => base.filter(r => p.get(r) === v).length;
+  return '<div class="pill-tabs">' + '<button class="' + (!st[p.name] ? 'on' : '') + '" data-act="lpill" data-key="' + key + '" data-name="' + p.name + '" data-v="">All<span class="n">' + base.length + '</span></button>'
+    + p.values.map(v => '<button class="' + (st[p.name] === v ? 'on' : '') + '" data-act="lpill" data-key="' + key + '" data-name="' + p.name + '" data-v="' + esc(v) + '">' + esc(v) + '<span class="n">' + cnt(v) + '</span></button>').join('') + '</div>';
+}
+ACT.lpill = el => { ui.lists[el.dataset.key][el.dataset.name] = el.dataset.v; ui.lists[el.dataset.key].page = 1; render(); };
 function listBody(key) {
   const cfg = LISTS[key], st = ui.lists[key];
   const all = cfg.rows().filter(r => cfg.match(r, st));
