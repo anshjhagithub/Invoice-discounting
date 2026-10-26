@@ -134,3 +134,25 @@ powershell -File tests/shot.ps1 -Name x -Hash '#/pos'        # screenshot to %TE
 - **Stale or odd data:** use **Scenarios & reset**, or clear this site's `localStorage` (the key is `dice.billing.proto.v2`).
 - **A button is greyed out:** check **Acting as**, or the PO may not be Approved yet.
 - **Fonts look different offline:** Inter loads from Google Fonts; the app falls back to system fonts.
+
+## Edge cases covered (PRD v1.3 section 5)
+`node tests/build-and-run.js` runs 232 scenario checks plus `tests/edge.test.js` (37 checks, one or more per edge case); `flow.html` drives the same through the UI.
+
+| Case | Behaviour |
+|---|---|
+| E01-E04, E07, E08 | Accepted-only eligibility, pending reserves PO qty, one GRN in several invoices, one failing line blocks and is named, no over-receipt, price lock |
+| E05, E10 | Posted / paid invoices are never altered; when their receipt is reversed they show an **AP review** flag with the overage (invoice list + invoice view) |
+| E06 | Reversing a GRN **or SRN** re-matches every unposted dependent invoice at once (milestone, progressive and standard); failures drop to Matching Failed and release their hold |
+| E09-E12 | Gates, one receipt per milestone, **Request info** (resubmit; both submissions kept), a receipt can no longer be linked to an already-invoiced milestone |
+| E13 | Ageing on submitted milestones: reminder after 2 days, escalation to the Procurement Manager after 5 (Approvals tab + drawer) |
+| E16 | Out-of-sequence approval is allowed with an advisory |
+| E17 | Amounts typed instead of percentages sum exactly (no 99.9999% error) |
+| E19 | **Cancel** an unsubmitted milestone through Amend PO; one with allocations / approval / linked receipts is refused with the reason; milestone codes never collide |
+| E20 | Due-date changes never touch eligibility or amounts |
+| E21 | **STALE**: if balances moved while the Submit Invoice drawer was open (also from another browser tab) the invoice is refused with the refreshed reasons |
+| E22 | Idempotency key per submission - a double click returns the same invoice |
+| E23 | Invoices stuck in Submitted / Pending Matching > 24 h become Matching Failed and release their hold (swept on load) |
+| E24-E26 | Duplicate bill number fails matching; a rejected invoice's number can be reused on resubmission; credit notes never restore eligibility, **Reverse via credit note** (Posted / Paid) does |
+| E27-E29 | Certified cumulative rules, amend below invoicing blocked, GST validated against the PO rate |
+
+Not built (needs a backend or a product decision): E14 approver delegation, E30 advance / retention, true row-lock concurrency (E21 is detected at submit, not locked).

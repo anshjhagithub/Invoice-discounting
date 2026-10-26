@@ -136,5 +136,21 @@ run('queues', () => {
   nav('ap'); ACT['inv-post']({ dataset: { id: i.id } }); submitModal(); T('posted from AP', getInv(i.id).status === 'Posted'); ACT['inv-pay']({ dataset: { id: i.id } }); submitModal(); T('paid from AP', getInv(i.id).status === 'Paid');
   nav('receipts'); T('receipts list shows GRN and SRN', mainText().includes('GRN-') && mainText().includes('SRN-'));
 });
+/* ===== 7. Corrections and edge cases through the UI (PRD §5) ===== */
+run('corrections and edge cases', () => {
+  seedDb('default'); const po = PO('po-1052'), m = msOf(po)[1];
+  nav('approvals?tab=milestones'); T('E13 approvals queue shows ageing (reminder / escalated)', mainText().includes('Reminder sent') && mainText().includes('Escalated to Procurement Manager'));
+  openMilestonePanel(m.id); T('milestone drawer offers Request info next to Reject', !!$q('.panel [data-act="ms-info"]'));
+  click('.panel .card [data-act="ms-info"]'); $q('.overlay textarea').value = 'page 3 missing'; submitModal();
+  T('Request info returns it to the supplier (resubmit allowed)', getMS(m.id).status === 'Rejected' && getMS(m.id).infoRequested === true && panelText().includes('Information requested')); closePanel();
+  const i = db.invoices.find(v => v.status === 'Pending Approval'); A.approveInvoice(i.id); A.postInvoice(i.id); nav('invoice/' + i.id);
+  click('[data-act="inv-more"]'); const rv = [...document.querySelectorAll('.menu button')].find(b => /Reverse via credit note/.test(b.textContent)); T('posted invoice offers Reverse via credit note', !!rv);
+  rv.click(); $q('.overlay textarea').value = 'duplicate billing'; submitModal(); T('invoice reversed; allocation released; banner shows it', getInv(i.id).reversed && mainText().includes('Reversed via credit note') && isLive(getInv(i.id)) === false);
+  const x = db.srns.find(r => r.status === 'Accepted'); openReceiptPanel('srn', x.id); T('accepted SRN offers Reverse SRN', !!$q('.panel [data-act="srn-reverse"]'));
+  click('.panel [data-act="srn-reverse"]'); $q('.overlay textarea').value = 'not rendered'; submitModal(); T('SRN reversed from its drawer', getSRN(x.id).reversed === true); closePanel();
+  const po45 = PO('po-1045'); ACT['po-amend']({ dataset: { id: po45.id } });
+  T('amend dialog offers Cancel only on milestones that can still be cancelled', document.querySelectorAll('.overlay input[name^="mx_"]').length >= 1 && document.querySelectorAll('.overlay input[name^="mx_"]').length < msOf(po45).length); document.querySelector('.overlay')?.remove();
+});
+
 document.getElementById('out').textContent = log.join('\n') + '\n' + (log.some(l => l.startsWith('FAIL') || l.startsWith('ERR')) ? 'SOME FAILED' : 'ALL UI FLOWS PASSED');
 </script></body></html>

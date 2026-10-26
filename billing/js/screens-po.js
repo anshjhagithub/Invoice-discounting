@@ -124,7 +124,7 @@ function openMsModal(idx) {
     } });
   const tot = fVal(f), pi = ov.querySelector('[name=pct]'), ai = ov.querySelector('[name=amount]'), doc = ov.querySelector('#mm-doc');
   pi.addEventListener('input', () => { ai.value = tot ? r2((+pi.value || 0) * tot / 100) : ''; });
-  ai.addEventListener('input', () => { pi.value = tot ? Math.round((+ai.value || 0) / tot * 1e6) / 1e4 : ''; });
+  ai.addEventListener('input', () => { pi.value = tot ? parseFloat(((+ai.value || 0) / tot * 100).toFixed(8)) : ''; });
   ov.querySelector('[name=needsDoc]').addEventListener('change', e => { doc.style.display = e.target.checked ? '' : 'none'; });
 }
 ACT['ms-edit'] = el => openMsModal(+el.dataset.i);
@@ -157,22 +157,23 @@ function billTabName(po) { return po.billingMethod === 'Milestone' ? 'Milestones
 function poDetail(po, r) {
   const tab = r.q.tab || 'overview', s = poSummary(po), st = poStage(po);
   const actions = [];
-  if (po.status === 'Draft') actions.push(gbtn('po.edit', 'po-edit', 'Edit', { data: { id: po.id }, icn: 'edit', cls: 'btn-outline' }), gbtn('po.edit', 'po-submit-draft', 'Submit for Approval', { cls: 'btn-primary', data: { id: po.id }, icn: 'check' }));
-  if (po.status === 'Pending Approval') actions.push(gbtn('po.edit', 'po-reopen', 'Return to draft', { data: { id: po.id }, cls: 'btn-ghost' }), gbtn('po.approve', 'po-reject', 'Reject', { cls: 'btn-danger', data: { id: po.id } }), gbtn('po.approve', 'po-approve', 'Approve', { cls: 'btn-primary', data: { id: po.id }, icn: 'check' }));
-  if (po.status === 'Rejected') actions.push(gbtn('po.edit', 'po-reopen', 'Revise PO', { cls: 'btn-primary', data: { id: po.id }, icn: 'edit' }));
+  if (po.status === 'Draft') actions.push(gbtn('po.edit', 'po-edit', 'Edit', { data: { id: po.id }, icn: 'edit', cls: 'btn-outline' }), gbtn('po.edit', 'po-submit-draft', 'Submit for Approval', { cls: 'btn-soft', data: { id: po.id }, icn: 'check' }));
+  if (po.status === 'Pending Approval') actions.push(gbtn('po.edit', 'po-reopen', 'Return to draft', { data: { id: po.id }, cls: 'btn-ghost' }), gbtn('po.approve', 'po-reject', 'Reject', { cls: 'btn-danger', data: { id: po.id } }), gbtn('po.approve', 'po-approve', 'Approve', { cls: 'btn-soft', data: { id: po.id }, icn: 'check' }));
+  if (po.status === 'Rejected') actions.push(gbtn('po.edit', 'po-reopen', 'Revise PO', { cls: 'btn-soft', data: { id: po.id }, icn: 'edit' }));
   if (po.status === 'Approved') actions.push(gbtn('po.amend', 'po-amend', 'Amend PO', { data: { id: po.id }, icn: 'edit', cls: 'btn-outline' }));
-  actions.push(actBtn('po-view', 'View Purchase Order', { cls: 'btn-primary', data: { id: po.id } }));
   const nRec = (hasGoods(po) ? grnsOf(po).length : 0) + (hasServices(po) ? srnsOf(po).length : 0);
-  const tabs = [['overview', 'Overview'], ['lines', 'Line Items', po.lines.length], ['billing', billTabName(po), po.billingMethod === 'Milestone' ? msOf(po).length : poCertified(po) ? claimsOf(po).length : null], ['receipts', recLabel(po), nRec], ['invoices', 'Invoices', invsOf(po).length], ['history', 'History']];
+  const tabs = [['overview', 'Overview'], ['lines', 'Line Items'], ['billing', billTabName(po)], ['receipts', recLabel(po)], ['invoices', 'Invoice'], ['history', 'History']];
   const body = { overview: poOverview, lines: poLinesTab, billing: poBillingTab, receipts: poReceiptsTab, invoices: poInvoicesTab, history: poHistoryTab }[tab] || poOverview;
   const dots = st.steps.map((_, i) => `<i class="${st.reached[i] ? 'on' : ''} ${i === st.cur && !st.complete ? 'cur' : ''}">${st.reached[i] ? icon('check', 8, 4) : ''}</i>`).join('');
-  return `<div class="page">${pageHead({ title: po.number, tags: `${poMethodBadge(po)} ${typeBadge(po)}`, right: actions.join('') })}
-  <div class="stage ${st.tone === 'green' ? '' : st.tone}"><div class="ico">${icon(po.type === 'Goods' ? 'box' : po.type === 'Services' ? 'truck' : 'layers', 24, 1.8)}</div>
+  return `<div class="page po-detail"><div class="ph"><button class="back" data-act="back" title="Back">${icon('back', 18, 2)}</button><div class="po-ttl"><h1>${esc(po.number)}</h1><div class="tags">${poMethodBadge(po)} ${typeBadge(po)}</div></div><div class="right">${actions.join('')}</div></div>
+  <div class="stage-row"><div class="stage ${st.tone === 'green' ? '' : st.tone}"><div class="ico">${icon(po.type === 'Goods' ? 'box' : po.type === 'Services' ? 'truck' : 'layers', 24, 1.8)}</div>
     <div class="grow"><div class="t">${esc(st.label)}</div><div class="chips"><span class="chip">Stage ${Math.min(st.cur + 1, 6)}/6</span><span class="chip">${esc(getSup(po.supplierId).name)} · Vendor</span>${po.status !== 'Rejected' && !st.complete ? `<span class="chip">${esc(st.next)}</span>` : ''}</div></div>
     <div class="dots">${dots}</div><div class="pct">${st.pctDone}%</div>${po.status === 'Approved' && !st.complete ? '<span class="live">LIVE</span>' : ''}</div>
+    <button class="side-tg" data-act="po-side" title="${ui.poSideOff ? 'Show' : 'Hide'} side panel">${icon(ui.poSideOff ? 'chevLeft' : 'chevRight', 14, 2.2)}</button></div>
   ${tabsHtml(tabs, tab, `#/po/${po.id}`)}
   <div>${body(po, s)}</div></div>`;
 }
+ACT['po-side'] = () => { ui.poSideOff = !ui.poSideOff; render(); };
 ACT['po-submit-draft'] = el => done(A.savePO(poDraftExisting(getPO(el.dataset.id)), true));
 ACT['po-approve'] = el => confirmBox({ title: 'Approve purchase order', message: `Approve <b>${esc(getPO(el.dataset.id).number)}</b>? It becomes available for ${recName(getPO(el.dataset.id))}${getPO(el.dataset.id).billingMethod === 'Milestone' ? ' and milestone work' : ''} and invoice selection.`, confirmLabel: 'Approve', onConfirm: () => done(A.approvePO(el.dataset.id)) });
 ACT['po-reject'] = el => reasonModal({ title: 'Reject purchase order', label: 'Rejection reason', btn: 'Reject PO', onSubmit: reason => { done(A.rejectPO(el.dataset.id, reason)); } });
@@ -214,11 +215,12 @@ function poOverview(po, s) {
   const paid = s.paid, apprOnly = r2(s.approved - s.paid), res = s.reserved, avail = s.remaining;
   const log = db.audit.filter(a => a.poId === po.id).slice(0, 7), next = nextSteps(po, s);
   const basis = po.billingMethod === 'Progressive' ? (poCertified(po) ? 'Certified work progress' : `Accepted ${recName(po)}s`) : po.billingMethod === 'Milestone' ? `${msOf(po).length} milestones` : `Accepted ${recName(po)}s, PO level`;
-  return `<div class="main-grid"><div>
+  return `<div class="main-grid ${ui.poSideOff ? 'side-off' : ''}"><div>
+    <div class="ov-top"><h2>Overview</h2><span class="spacer"></span>${actBtn('po-view', 'View Purchase Order', { cls: 'btn-primary', data: { id: po.id } })}</div>
     <div class="stat-row"><div class="stat green"><b>${esc(po.status)}</b><span>Status</span></div><div class="stat peach"><b>${esc(po.createdBy)}</b><span>Raised By</span></div><div class="stat pink"><b>${esc(po.category)}</b><span>Category</span></div><div class="stat gray"><b>${money(s.value)}</b><span>Amount (excl. GST)</span></div></div>
     <div class="meta-row"><div><div class="k">PO Title</div><div class="v">${esc(po.title)}</div></div><div><div class="k">Creation Date</div><div class="v">${fmtD(po.poDate)}</div></div><div><div class="k">Delivery Date</div><div class="v">${fmtD(po.deliveryDate)}</div></div><div><div class="k">End Date</div><div class="v">${fmtD(po.endDate)}</div></div></div>
     <div class="cards-3" style="margin-top:22px">
-      <div class="card"><div class="card-t">Vendor Details</div><div class="strong" style="margin-bottom:8px">${esc(sup.name)}</div><div class="dl"><span class="k">Email</span><span>${esc(sup.email)}</span><span class="k">Mobile</span><span>${esc(sup.mobile)}</span><span class="k">GSTIN</span><span>${esc(sup.gstin)}</span></div></div>
+      <div class="card"><div class="card-t">Supplier Details</div><div class="strong" style="margin-bottom:8px">${esc(sup.name)}</div><div class="dl"><span class="k">Email</span><span>${esc(sup.email)}</span><span class="k">Mobile</span><span>${esc(sup.mobile)}</span><span class="k">GSTIN</span><span>${esc(sup.gstin)}</span></div></div>
       <div class="card"><div class="card-t">Billing Details</div><div class="strong" style="margin-bottom:8px">${esc(off.name)}</div><div class="dl"><span class="k">Address</span><span>${esc(off.address)}</span><span class="k">GSTIN</span><span>${esc(off.gstin)}</span></div></div>
       <div class="card"><div class="card-t">Billing Setup</div><div style="margin-bottom:10px">${poMethodBadge(po)}</div><div class="dl"><span class="k">Based on</span><span>${esc(basis)}</span><span class="k">GST</span><span>${gstOf(po)}%</span><span class="k">Receipt</span><span>${recName(po)} (${po.type.toLowerCase()})</span></div></div>
     </div>
@@ -263,8 +265,13 @@ function poBillingTab(po, s) {
 }
 function poReceiptsTab(po) { return rcTab(po); }
 function poInvoicesTab(po) {
-  return `<div class="sec" style="margin-top:22px">Invoices<span class="spacer"></span>${po.status === 'Approved' ? gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary', data: { po: po.id }, icn: 'plus' }) : ''}</div>
-  <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Invoice</th><th>Bill No.</th><th>Date</th><th>Against</th><th class="right">Base</th><th class="right">GST</th><th class="right">Total</th><th>Matching</th><th>Status</th><th></th></tr></thead><tbody>${invsOf(po).map(i => `<tr class="click" data-act="inv-view" data-id="${i.id}"><td class="strong">${invRef(i)}</td><td>${esc(i.number)}</td><td>${fmtD(i.date)}</td><td>${esc(i.allocs.map(allocRefLabel).join(', ') || 'PO level')}</td><td class="num">${fmtNum(i.net)}</td><td class="num">${fmtNum(i.gst)}</td><td class="num strong">${fmtNum(i.gross)}</td><td>${i.match ? sb(i.match.result) : '—'}</td><td>${sb(i.status)}</td><td class="act"><button class="btn-view" data-act="inv-view" data-id="${i.id}">${icon('open', 12, 2)}View</button></td></tr>`).join('') || emptyRow(10, 'No invoices yet.')}</tbody></table></div>`;
+  const invs = invsOf(po);
+  return `<div class="sec" style="margin-top:22px">Invoices${po.status === 'Approved' ? `<button class="plus-circle" data-act="inv-new" data-po="${po.id}" title="Submit Invoice">${icon('plus', 18, 2.4)}</button>` : ''}</div>
+  ${invs.length ? `<div class="inv-cards">${invs.map(i => `<div class="inv-card" data-act="inv-view" data-id="${i.id}"><div class="inv-thumb"><i></i><i></i><i></i></div>
+    <div class="inv-ref">${invRef(i)}</div><div class="inv-amt">INR ${fmtNum(i.gross)}</div>
+    <div class="inv-meta"><div>Vendor: ${esc(getSup(po.supplierId).name)}</div><div>Owner: ${esc(i.createdBy || po.createdBy)}</div><div>Date: ${fmtD(i.date)}</div><div>Bill No.: ${esc(i.number)}</div><div>Against: ${esc(i.allocs.map(allocRefLabel).join(', ') || 'PO level')}</div></div>
+    <div class="inv-foot">${sb(i.status)}${i.match ? sb(i.match.result) : ''}</div></div>`).join('')}</div>`
+    : `<div class="po-empty">${icon('box', 22, 1.6)}<span>No Invoice Submitted yet</span></div>`}`;
 }
 function poHistoryTab(po) {
   const log = db.audit.filter(a => a.poId === po.id);
@@ -294,12 +301,12 @@ ACT['po-amend'] = el => {
     <div class="sec-h">PO lines</div>
     <table class="tbl sm"><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th class="right">Current value</th></tr></thead><tbody>${po.lines.map(l => { const touched = grnsOf(po).some(g => g.lineId === l.id) || srnsOf(po).some(s => s.lineId === l.id) || invsOf(po).some(isLive); return `<tr><td>${l.no}</td><td>${esc(l.desc)}</td><td><input class="input sm num" style="width:100px" name="q_${l.id}" type="number" step="any" value="${l.qty}"></td><td><input class="input sm num" style="width:120px" name="p_${l.id}" type="number" step="any" value="${l.price}" ${touched ? 'readonly title="Locked — receipts/invoices exist"' : ''}> ${touched ? icon('lock', 13) : ''}</td><td class="num">${fmtNum(lineNet(l))}</td></tr>`; }).join('')}</tbody></table>
     ${ms.length ? `<div class="sec-h">Milestone schedule <span class="hint" style="text-transform:none;font-weight:400">(% of the amended PO value — must total 100%; locked milestones keep their amount)</span></div>
-    <table class="tbl sm"><thead><tr><th>ID</th><th>Name</th><th>%</th><th class="right">Current amount</th><th>Due date <span class="hint" style="text-transform:none;font-weight:400">(can always be rescheduled)</span></th><th>State</th></tr></thead><tbody>${ms.map(m => { const lk = lockedMs(m); return `<tr><td class="strong">${m.code}</td><td><input class="input sm" name="mn_${m.id}" value="${esc(m.name)}" ${lk ? 'readonly' : ''}></td><td><input class="input sm num" style="width:100px" name="mv_${m.id}" type="number" step="any" value="${m.pct}" ${lk ? 'readonly' : ''}></td><td class="num">${fmtNum(m.amount)}</td><td><input class="input sm" style="width:150px" type="date" name="md_${m.id}" value="${esc(m.planned || '')}"></td><td>${lk ? `<span class="lock">${icon('lock', 13)} Locked — ${usage('milestone', m.id).value > EPS ? 'invoiced' : m.status.toLowerCase()}</span>` : sb(m.status)}</td></tr>`; }).join('')}
-      <tr><td class="strong">New</td><td><input class="input sm" name="new_name" placeholder="Add milestone (optional)"></td><td><input class="input sm num" style="width:100px" name="new_val" type="number" step="any" placeholder="%"></td><td colspan="3" class="hint">Leave blank to skip (the new milestone starts Pending and needs no extra acceptance — edit it after if needed)</td></tr></tbody></table>` : ''}
+    <table class="tbl sm"><thead><tr><th>ID</th><th>Name</th><th>%</th><th class="right">Current amount</th><th>Due date <span class="hint" style="text-transform:none;font-weight:400">(can always be rescheduled)</span></th><th>State</th><th>Cancel</th></tr></thead><tbody>${ms.map(m => { const lk = lockedMs(m); return `<tr><td class="strong">${m.code}</td><td><input class="input sm" name="mn_${m.id}" value="${esc(m.name)}" ${lk ? 'readonly' : ''}></td><td><input class="input sm num" style="width:100px" name="mv_${m.id}" type="number" step="any" value="${m.pct}" ${lk ? 'readonly' : ''}></td><td class="num">${fmtNum(m.amount)}</td><td><input class="input sm" style="width:150px" type="date" name="md_${m.id}" value="${esc(m.planned || '')}"></td><td>${lk ? `<span class="lock">${icon('lock', 13)} Locked — ${usage('milestone', m.id).value > EPS ? 'invoiced' : m.status.toLowerCase()}</span>` : sb(m.status)}</td><td>${lk ? `<span class="hint" title="Submitted, approved or invoiced milestones cannot be cancelled">—</span>` : `<label class="check-row"><input type="checkbox" name="mx_${m.id}"> Remove</label>`}</td></tr>`; }).join('')}
+      <tr><td class="strong">New</td><td><input class="input sm" name="new_name" placeholder="Add milestone (optional)"></td><td><input class="input sm num" style="width:100px" name="new_val" type="number" step="any" placeholder="%"></td><td colspan="4" class="hint">Leave blank to skip (the new milestone starts Pending and needs no extra acceptance — edit it after if needed)</td></tr></tbody></table>` : ''}
     <div style="margin-top:16px">${fld('Amendment reason', 'reason', { rows: 2, req: true, ph: 'Why is the PO being amended?' })}</div>`,
     onSubmit: v => {
       const lines = po.lines.map(l => ({ id: l.id, qty: +v['q_' + l.id], price: +v['p_' + l.id] }));
-      const msIn = ms.map(m => ({ id: m.id, name: v['mn_' + m.id], pct: +v['mv_' + m.id], planned: v['md_' + m.id] }));
+      const msIn = ms.map(m => ({ id: m.id, name: v['mn_' + m.id], pct: +v['mv_' + m.id], planned: v['md_' + m.id], remove: !!v['mx_' + m.id] }));
       if (String(v.new_name || '').trim() && +v.new_val > 0) msIn.push({ id: 'new', name: v.new_name, pct: +v.new_val });
       const r = A.amendPO(po.id, { lines, milestones: msIn, reason: v.reason });
       if (!r.ok) { errorModal(r.msg, r.errors); return false; }

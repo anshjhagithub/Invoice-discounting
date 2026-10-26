@@ -142,6 +142,10 @@ function seedDb(scn = 'default') {
     { name: 'Go-live sign-off', pct: 20, grn: true, srn: true },
   ]);
 
+  /* E13 ageing demo: M2 of PO 52 has waited 3 days (reminder), M2 of PO 45 six days (escalated) */
+  msOf(p1052)[1].submittedAt = new Date(Date.now() - 3 * 864e5).toISOString();
+  msOf(p1045)[1].submittedAt = new Date(Date.now() - 6 * 864e5).toISOString();
+
   /* a PO awaiting approval */
   addPO({ num: 1061, title: 'Conveyor belt assembly', type: 'Goods', category: 'Machinery & Equipment', office: 'o-6192', method: 'Standard', status: 'Pending Approval', poDays: -2, lines: [{ desc: 'Conveyor Belt Assembly', qty: 5, uom: 'Units', price: 7500 }] });
 

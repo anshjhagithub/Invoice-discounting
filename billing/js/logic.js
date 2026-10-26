@@ -15,6 +15,8 @@ const LIVE = ['Submitted', 'Pending Matching', 'Pending Approval', 'Approved', '
 const APPROVED = ['Approved', 'Posted', 'Paid'];
 const GRN_OK = ['Accepted', 'Partially Accepted'];
 const SRN_OK = ['Accepted', 'Partially Accepted'];
+const STALE_HOURS = 24;                                                        // E23: an invoice stuck in Submitted / Pending Matching longer than this fails matching and releases its hold
+const MS_REMIND_DAYS = 2, MS_ESCALATE_DAYS = 5;                                  // E13: ageing of a milestone waiting for its approver
 const isLive = i => LIVE.includes(i.status) && !i.reversed;     // a reversed (credited) invoice no longer holds an allocation
 
 const getPO = id => db.pos.find(p => p.id === id);
@@ -80,6 +82,7 @@ function checkReceiptLink(po, milestoneId, kind) {
   const m = getMS(milestoneId), L = kind.toUpperCase();
   if (!m || m.poId !== po.id) return ['The selected milestone does not belong to this PO.'];
   if (!(kind === 'grn' ? m.needsGrn : m.needsSrn)) return [`${m.code} is not configured to require a ${L}.`];
+  if (usage('milestone', m.id).value > EPS) return [`${m.code} already has invoices against it — a new ${L} can no longer be linked (it would reopen the acceptance gate behind billed value).`];
   return [];
 }
 function validateGRN(d) {
@@ -100,8 +103,8 @@ function validateGRN(d) {
 }
 
 /* ---------- service receipts (SRN) ---------- */
-const srnActive = s => s.status === 'Rejected' ? 0 : (SRN_OK.includes(s.status) ? s.acceptedValue : s.serviceValue);
-const srnEnt = s => SRN_OK.includes(s.status) ? s.acceptedValue : 0;
+const srnActive = s => (s.status === 'Rejected' || s.reversed) ? 0 : (SRN_OK.includes(s.status) ? s.acceptedValue : s.serviceValue);
+const srnEnt = s => (SRN_OK.includes(s.status) && !s.reversed) ? s.acceptedValue : 0;
 function lineServiceStats(po, line, exId) {
   const ss = srnsOf(po).filter(s => s.lineId === line.id && s.id !== exId);
   return { total: lineNet(line), active: sum(ss, srnActive), accepted: sum(ss, srnEnt), remaining: r2(Math.max(0, lineNet(line) - sum(ss, srnActive))) };
@@ -374,6 +377,33 @@ function allocErrors(inv) {
   return errs;
 }
 
+/* an approved / posted / paid invoice whose source entitlement later dropped (receipt reversed or reduced) is never altered — it is flagged for AP review with the overage */
+function apReview(inv) {
+  if (!inv || inv.reversed || !APPROVED.includes(inv.status)) return null;
+  const po = getPO(inv.poId); if (!po) return null;
+  if (po.billingMethod === 'Standard') {
+    const accepted = sum(sourceItems(po), x => x.entValue), live = sum(invsOf(po).filter(isLive), i => i.net), over = r2(live - accepted);
+    return over > EPS ? { amount: over, refs: ['PO level'] } : null;
+  }
+  const items = sourceItems(po); let over = 0; const refs = [];
+  inv.allocs.forEach(a => { const it = items.find(x => x.kind === a.kind && x.refId === a.refId); if (!it) return; const o = r2(it.usedValue - it.entValue); if (o > EPS) { over = r2(over + Math.min(o, a.value)); refs.push(it.label); } });
+  return over > EPS ? { amount: over, refs } : null;
+}
+/* E06: when a receipt is reversed, every unposted invoice that relied on it is re-matched at once; the ones that no longer match fall to Matching Failed and release their hold */
+function revalidateDependents(po, kind, refId, why) {
+  const hit = [];
+  db.invoices.filter(i => i.poId === po.id && !i.reversed && ['Submitted', 'Pending Matching', 'Pending Approval', 'Approved'].includes(i.status)
+    && (po.billingMethod === 'Standard' || i.allocs.some(a => (a.kind === kind && a.refId === refId) || (a.kind === 'milestone' && (((getMS(a.refId) || {}).grnIds || []).includes(refId) || ((getMS(a.refId) || {}).srnIds || []).includes(refId)))))
+  ).forEach(i => {
+    const ev = evaluateInvoice(i);
+    if (ev.result !== 'Blocked') return;
+    i.match = { at: nowISO(), by: actor(), result: ev.result, checks: ev.checks };
+    setStatus(i, 'Matching Failed', why);
+    audit(po.id, invRef(i), `${invRef(i)} failed re-matching after ${why} — allocation released; the supplier is notified to correct and resubmit.`, 'bad'); hit.push(i);
+  });
+  return hit;
+}
+
 /* ---------- matching engine ---------- */
 function evaluateInvoice(inv) {
   const po = getPO(inv.poId), sup = po && getSup(po.supplierId), errs = po ? allocErrors(inv) : [];
@@ -394,7 +424,7 @@ function evaluateInvoice(inv) {
   if (e2.length) C('qty', 'Quantity / value match', 'fail', e2.map(e => e.msg).join(' '));
   else if (po.billingMethod === 'Standard') C('qty', 'Quantity / value match', 'pass', `Invoice amount ${money(inv.net)} ≤ accepted unbilled receipt value.`);
   else C('qty', 'Quantity / value match', 'pass', `Allocations total ${money(sum(inv.allocs, a => a.value))} = invoice amount ${money(inv.net)}; every allocation is within its remaining eligible ${po.billingMethod === 'Milestone' ? 'milestone balance' : 'quantity/value'}.`);
-  const dups = db.invoices.filter(i => i.id !== inv.id && i.supplierId === inv.supplierId && !['Draft', 'Cancelled'].includes(i.status) && String(i.number).trim().toLowerCase() === String(inv.number).trim().toLowerCase());
+  const dups = db.invoices.filter(i => i.id !== inv.id && i.supplierId === inv.supplierId && !['Draft', 'Cancelled', 'Rejected'].includes(i.status) && String(i.number).trim().toLowerCase() === String(inv.number).trim().toLowerCase());
   C('dup', 'Duplicate invoice check', dups.length ? 'fail' : 'pass', dups.length ? `Bill number "${inv.number}" was already submitted by ${sup.name} as ${dups.map(d => `${invRef(d)} (${d.status})`).join(', ')}.` : `Bill number "${inv.number}" is unique for ${sup.name}.`);
   const otherLive = sum(db.invoices.filter(i => i.poId === po.id && isLive(i) && i.id !== inv.id), i => i.net), poVal = poNet(po);
   const eb = by('PO_BAL');
@@ -513,28 +543,35 @@ A.amendPO = (id, { lines, milestones, reason }) => {
   if (after < liveInv - EPS) errs.push(`Amended PO value ${money(after)} cannot be lower than invoices already submitted (${money(liveInv)}).`);
   let plan = null;
   if (po.billingMethod === 'Milestone') {
-    const cur = msOf(po);
+    let cur = msOf(po);
     const locked = msLocked;
+    const removed = cur.filter(m => milestones.some(x => x.id === m.id && x.remove));
+    removed.forEach(m => { const u = usage('milestone', m.id);
+      if (u.value > EPS) errs.push(`${m.code} cannot be cancelled: it has ${money(u.value)} allocated on ${u.invs.map(invRef).join(', ')}. Reverse or cancel those invoices first — invoiced history is never rewritten.`);
+      else if (locked(m)) errs.push(`${m.code} cannot be cancelled: it is already ${m.status.toLowerCase()}. Only a milestone that has not been submitted can be cancelled by amendment.`);
+      else if ((m.grnIds || []).length || (m.srnIds || []).length) errs.push(`${m.code} cannot be cancelled: receipts are linked to it. Unlink them first.`); });
+    cur = cur.filter(m => !removed.includes(m));
     const merged = cur.map(m => { const n = milestones.find(x => x.id === m.id); if (!n || locked(m)) return { ...m }; return { ...m, name: n.name, pct: +n.pct }; });
     const added = milestones.filter(x => !x.id || String(x.id).startsWith('new')).filter(x => String(x.name || '').trim() && +x.pct > 0).map(x => ({ name: x.name, pct: +x.pct, planned: x.planned || '', needsDoc: !!x.needsDoc, docTitle: x.docTitle || '', needsGrn: !!x.needsGrn, needsSrn: !!x.needsSrn, allowPartial: !!x.allowPartial }));
     added.forEach(x => { if (x.needsGrn && !hasGoods(po)) errs.push(`New milestone "${x.name}": the PO has no goods lines, so it cannot require a GRN.`); if (x.needsSrn && !hasServices(po)) errs.push(`New milestone "${x.name}": the PO has no services lines, so it cannot require an SRN.`); });
     const all = [...merged, ...added];
     const chk = scheduleCheck(all.map(m => m.id && locked(m) ? { ...m, pct: m.amount / after * 100 } : m), after);
     chk.errors.forEach(e => errs.push('Amended schedule: ' + e));
-    if (!errs.length) plan = { cur, merged, added, locked };
+    if (!errs.length) plan = { cur, merged, added, locked, removed };
   }
   if (errs.length) return NO(errs, 'Amendment rejected — see issues.');
   next.forEach(n => { const l = lineOf(po, n.id); l.qty = n.qty; l.price = n.price; });
   if (plan) {
-    const { cur, merged, added, locked } = plan;
+    const { cur, merged, added, locked, removed } = plan;
+    removed.forEach(m => { changes.push(`Cancelled milestone ${m.code} "${m.name}" (${money(m.amount)})`); db.milestones = db.milestones.filter(x => x.id !== m.id); });
     const rows = [...merged, ...added];                                         // existing first, then new
     let used = sum(rows.filter(m => m.id && locked(m)), m => m.amount);
     const free = rows.filter(m => !(m.id && locked(m)));
     free.forEach((m, i) => { m.amount = i === free.length - 1 ? r2(after - used) : r2(m.pct * after / 100); used = r2(used + m.amount); });
     cur.forEach(m => { const n = merged.find(x => x.id === m.id); if (!locked(m)) { if (m.name !== n.name || m.amount !== n.amount) changes.push(`${m.code} "${m.name}" amount ${money(m.amount)} → ${money(n.amount)}`); m.name = n.name; m.amount = n.amount; } });
-    added.forEach(x => { const seq = msOf(po).length + 1; changes.push(`Added milestone M${seq} "${x.name}" ${money(x.amount)}`);
+    added.forEach(x => { const seq = Math.max(0, ...msOf(po).map(q => q.seq)) + 1; changes.push(`Added milestone M${seq} "${x.name}" ${money(x.amount)}`);
       db.milestones.push({ id: uid('ms'), poId: po.id, seq, code: `M${seq}`, name: x.name, pct: x.pct, amount: x.amount, planned: x.planned, status: 'Pending', needsDoc: x.needsDoc, docTitle: x.needsDoc ? (String(x.docTitle || '').trim() || 'Supporting document') : '', needsGrn: x.needsGrn, needsSrn: x.needsSrn, allowPartial: x.allowPartial, doc: null, grnIds: [], srnIds: [], submissions: [], history: [{ at: nowISO(), by: actor(), role: db.meta.role, from: '', to: 'Pending', note: `Added by PO amendment v${po.version + 1}` }], evidence: [], remarks: '', actualDate: '', approvedAt: '', rejectReason: '' }); });
-    msOf(po).forEach(m => { m.pct = after ? r2(m.amount / after * 100) : 0; });
+    msOf(po).forEach(m => { m.pct = after ? Math.round(m.amount / after * 1e8) / 1e6 : 0; });
     /* rescheduling: due dates may move at any time (amounts of locked milestones never do); every move is logged */
     cur.forEach(m => { const n = milestones.find(x => x.id === m.id); if (n && n.planned && n.planned !== m.planned) { changes.push(`${m.code} due date ${fmtD(m.planned)} → ${fmtD(n.planned)}`); (m.history = m.history || []).push({ at: nowISO(), by: actor(), role: db.meta.role, from: m.status, to: m.status, note: `Rescheduled ${fmtD(m.planned)} → ${fmtD(n.planned)} (PO amendment v${po.version + 1}: ${reason})` }); m.planned = n.planned; } });
   }
@@ -588,9 +625,10 @@ A.reverseGRN = (id, reason) => {
   const g = getGRN(id); if (!g || !GRN_OK.includes(g.status) || g.reversed) return NO('Only accepted GRNs can be reversed.');
   if (!String(reason || '').trim()) return NO('A reversal reason is required.');
   g.reversed = true; g.reverseReason = reason; g.reversedAt = nowISO();
-  const hit = usage('grn', g.id), ms = g.milestoneId && getMS(g.milestoneId);
-  audit(g.poId, g.number, `${g.number} reversed (${reason}). Eligible balance reduced by ${fmtNum(g.accepted)} units. History preserved.${hit.invs.length ? ` In-flight invoices ${hit.invs.map(invRef).join(', ')} now rely on an invalidated receipt — re-run matching.` : ''}${ms ? ` Milestone ${ms.code} no longer has an accepted GRN.` : ''}`, 'bad');
-  save(); return OK(`${g.number} reversed`);
+  const hit = usage('grn', g.id), ms = g.milestoneId && getMS(g.milestoneId), po0 = getPO(g.poId);
+  const failed = revalidateDependents(po0, 'grn', g.id, `${g.number} reversed`);
+  audit(g.poId, g.number, `${g.number} reversed (${reason}). Eligible balance reduced by ${fmtNum(g.accepted)} units. History preserved.${failed.length ? ` Unposted invoices ${failed.map(invRef).join(', ')} failed re-matching and were released.` : ''}${hit.invs.some(i => APPROVED.includes(i.status) && !failed.includes(i)) ? ' Posted / approved invoices are preserved and flagged for AP review.' : ''}${ms ? ` Milestone ${ms.code} no longer has an accepted GRN.` : ''}`, 'bad');
+  save(); return OK(`${g.number} reversed${failed.length ? ` — ${failed.length} invoice(s) failed re-matching` : ''}`);
 };
 
 /* ----- SRN (services PO) ----- */
@@ -619,6 +657,15 @@ A.rejectSRN = (id, reason) => {
   s.status = 'Rejected'; s.rejectReason = reason; audit(s.poId, s.number, `${s.number} rejected: ${reason}`, 'bad'); save(); return OK(`${s.number} rejected`);
 };
 
+A.reverseSRN = (id, reason) => {
+  const x = getSRN(id); if (!x || !SRN_OK.includes(x.status) || x.reversed) return NO('Only accepted SRNs can be reversed.');
+  if (!String(reason || '').trim()) return NO('A reversal reason is required.');
+  x.reversed = true; x.reverseReason = reason; x.reversedAt = nowISO();
+  const ms = x.milestoneId && getMS(x.milestoneId), failed = revalidateDependents(getPO(x.poId), 'srn', x.id, `${x.number} reversed`);
+  audit(x.poId, x.number, `${x.number} reversed (${reason}). Accepted service value of ${money(x.acceptedValue)} withdrawn. History preserved.${failed.length ? ` Unposted invoices ${failed.map(invRef).join(', ')} failed re-matching and were released.` : ''}${ms ? ` Milestone ${ms.code} no longer has an accepted SRN.` : ''}`, 'bad');
+  save(); return OK(`${x.number} reversed${failed.length ? ` — ${failed.length} invoice(s) failed re-matching` : ''}`);
+};
+
 /* ----- Milestones: Pending → In Progress → Submitted for Approval → Under Review → Approved | Rejected (→ resubmit) ----- */
 const msRef = (po, m) => `${po.number} / ${m.code}`;
 function msMove(m, po, to, note, kind) {
@@ -627,6 +674,14 @@ function msMove(m, po, to, note, kind) {
 }
 /* segregation of duties (PRD UC-19): whoever submitted the evidence cannot review, approve or reject it. Demo Admin acts for every role and is exempt. */
 const msSod = m => db.meta.role !== 'admin' && m.submittedRole === db.meta.role ? NO(`Segregation of duties: ${m.submittedBy} submitted ${m.code}, so the same role cannot review or decide on it. Switch to another approver role.`) : null;
+/* E16: advisory only — completing / approving M2 before M1 is allowed but flagged (hard dependency is a later decision) */
+const msSeqWarn = (m, po) => { const early = msOf(po).filter(x => x.seq < m.seq && x.status !== 'Approved'); return early.length ? `Out of sequence: ${early.map(x => x.code).join(', ')} ${early.length > 1 ? 'are' : 'is'} not approved yet.` : ''; };
+/* E13: how long a submitted milestone has been waiting for its approver */
+function msAging(m) {
+  if (!msAwaiting(m) || !m.submittedAt) return null;
+  const days = Math.floor((Date.now() - new Date(m.submittedAt).getTime()) / 864e5);
+  return { days, level: days >= MS_ESCALATE_DAYS ? 'escalated' : days >= MS_REMIND_DAYS ? 'reminder' : 'ok' };
+}
 const msCtx = id => { const m = getMS(id), po = m && getPO(m.poId); return { m, po }; };
 A.msStart = id => {
   const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
@@ -645,7 +700,7 @@ A.msSubmit = (id, { actualDate, remarks, files } = {}) => {
   if (errs.length) return NO(errs);
   const v = (m.submissions || []).length + 1, resub = m.status === 'Rejected';
   (m.submissions = m.submissions || []).push({ v, at: nowISO(), by: actor(), role: db.meta.role, files: [...fl], remarks: remarks || '', actualDate, status: 'Submitted' });
-  Object.assign(m, { actualDate, remarks: remarks || '', evidence: [...fl], rejectReason: '', submittedBy: actor(), submittedRole: db.meta.role, submittedAt: nowISO(), reviewedBy: '', reviewedAt: '' });
+  Object.assign(m, { actualDate, remarks: remarks || '', evidence: [...fl], rejectReason: '', infoRequested: false, submittedBy: actor(), submittedRole: db.meta.role, submittedAt: nowISO(), reviewedBy: '', reviewedAt: '' });
   if (m.needsDoc) m.doc = { files: [...fl], remarks: remarks || '', status: 'Pending Approval', version: v, uploadedBy: actor(), uploadedRole: db.meta.role, uploadedAt: nowISO() };
   msMove(m, po, 'Submitted for Approval', `${resub ? 'resubmitted' : 'submitted'} (submission ${v}) with ${fl.length} file(s)${m.needsDoc ? ' incl. the ' + docTitleOf(m) : ''}`);
   save(); return OK(`${m.code} ${resub ? 'resubmitted' : 'submitted'} for approval`);
@@ -665,9 +720,20 @@ A.msApprove = (id, note) => {
   m.approvedAt = nowISO(); m.approvedBy = actor(); m.rejectReason = '';
   const last = (m.submissions || [])[(m.submissions || []).length - 1]; if (last) Object.assign(last, { status: 'Approved', decidedBy: actor(), decidedAt: nowISO() });
   if (m.needsDoc && m.doc) Object.assign(m.doc, { status: 'Approved', decidedBy: actor(), decidedAt: nowISO(), rejectReason: '' });
-  const g = msGate(m, po);
-  msMove(m, po, 'Approved', `${note ? note + ' — ' : ''}${g.ok ? money(m.amount) + ' is now invoice-eligible' : 'still blocked for invoicing: ' + g.reason}`, 'ok'); save();
-  return OK(g.ok ? `${m.code} approved — ${money(m.amount)} is now invoice-eligible` : `${m.code} approved — invoicing stays blocked until: ${g.reason}`);
+  const g = msGate(m, po), warn = msSeqWarn(m, po); m.infoRequested = false;
+  msMove(m, po, 'Approved', `${note ? note + ' — ' : ''}${g.ok ? money(m.amount) + ' is now invoice-eligible' : 'still blocked for invoicing: ' + g.reason}${warn ? ' · ' + warn : ''}`, 'ok'); save();
+  return OK((g.ok ? `${m.code} approved — ${money(m.amount)} is now invoice-eligible` : `${m.code} approved — invoicing stays blocked until: ${g.reason}`) + (warn ? ` (${warn})` : ''));
+};
+/* approver asks the supplier for more information instead of rejecting outright (PRD Flow 5 alternate, UC27): the supplier resubmits and history keeps both submissions */
+A.msRequestInfo = (id, note) => {
+  const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
+  if (!msAwaiting(m)) return NO(`${m.code} is ${m.status} — only a submitted milestone can have information requested.`);
+  if (!String(note || '').trim()) return NO('Say what information is needed.');
+  const sod = msSod(m); if (sod) return sod;
+  const last = (m.submissions || [])[(m.submissions || []).length - 1]; if (last) Object.assign(last, { status: 'Info Requested', decidedBy: actor(), decidedAt: nowISO(), reason: note });
+  if (m.needsDoc && m.doc) Object.assign(m.doc, { status: 'Rejected', decidedBy: actor(), decidedAt: nowISO(), rejectReason: 'Information requested: ' + note });
+  m.rejectReason = 'Information requested: ' + note; m.infoRequested = true; msMove(m, po, 'Rejected', 'Information requested: ' + note, 'bad'); save();
+  return OK(`${m.code} returned to the supplier — information requested`);
 };
 A.msReject = (id, reason) => {
   const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
@@ -676,7 +742,7 @@ A.msReject = (id, reason) => {
   const sod = msSod(m); if (sod) return sod;
   const last = (m.submissions || [])[(m.submissions || []).length - 1]; if (last) Object.assign(last, { status: 'Rejected', decidedBy: actor(), decidedAt: nowISO(), reason });
   if (m.needsDoc && m.doc) Object.assign(m.doc, { status: 'Rejected', decidedBy: actor(), decidedAt: nowISO(), rejectReason: reason });
-  m.rejectReason = reason; msMove(m, po, 'Rejected', reason, 'bad'); save(); return OK(`${m.code} rejected — the supplier can resubmit`);
+  m.rejectReason = reason; m.infoRequested = false; msMove(m, po, 'Rejected', reason, 'bad'); save(); return OK(`${m.code} rejected — the supplier can resubmit`);
 };
 /* link a GRN / SRN to a milestone (a milestone may have several; one receipt backs only one milestone) */
 A.msLinkReceipt = (msId, recId, quiet) => {
@@ -684,6 +750,7 @@ A.msLinkReceipt = (msId, recId, quiet) => {
   const g = getGRN(recId), sn = g ? null : getSRN(recId), r = g || sn, kind = g ? 'grn' : 'srn', L = kind.toUpperCase();
   if (!r || r.poId !== po.id) return NO(`Select a GRN / SRN that belongs to this PO.`);
   if (!(kind === 'grn' ? m.needsGrn : m.needsSrn)) return NO(`${m.code} is not configured to require a ${L}.`);
+  if (usage('milestone', m.id).value > EPS) return NO(`${m.code} already has invoices against it — a new ${L} can no longer be linked.`);
   if (r.milestoneId && r.milestoneId !== m.id) return NO(`${r.number} is already linked to ${getMS(r.milestoneId)?.code || 'another milestone'}. A receipt can support only one milestone.`);
   const list = kind === 'grn' ? (m.grnIds = m.grnIds || []) : (m.srnIds = m.srnIds || []);
   if (list.includes(r.id)) return NO(`${r.number} is already linked to ${m.code}.`);
@@ -745,6 +812,11 @@ function setStatus(inv, to, note) {
 A.saveInvoice = (d, mode) => {                  // mode: 'draft' | 'submit'
   const po = getPO(d.poId), errs = [];
   if (!po) return NO('Select a purchase order.');
+  if (d.idemKey) {                                                  // E22: a double-click or network retry returns the invoice already created for this submission
+    const prior = db.invoices.find(i => i.idemKey === d.idemKey);
+    if (prior && !['Draft', 'Matching Failed'].includes(prior.status)) return OK(`${invRef(prior)} was already submitted`, { id: prior.id, duplicate: true });
+    if (prior && !d.id) d = { ...d, id: prior.id };
+  }
   if (!poAllocatable(po)) return NO(`${po.number} is ${po.status}. Only approved POs can be invoiced.`);
   const b = buildInvoice({ ...d, supplierId: po.supplierId, method: po.billingMethod });
   if (!String(b.number || '').trim()) errs.push('Enter the bill number.');
@@ -753,7 +825,14 @@ A.saveInvoice = (d, mode) => {                  // mode: 'draft' | 'submit'
   if (d.discountPct !== '' && d.discountPct != null && (+d.discountPct < 0 || +d.discountPct > 100)) errs.push('Discount percent must be between 0 and 100.');
   const ca = (d.costAlloc && d.costAlloc.rows || []).filter(r => r.dept || +r.pct);
   if (ca.length && Math.abs(sum(ca, r => +r.pct) - 100) > 0.0001) errs.push(`Cost allocation percentages total ${fmtNum(sum(ca, r => +r.pct))}% — they must total 100%.`);
-  if (mode === 'submit') allocErrors(b).forEach(e => errs.push(e.msg));
+  if (mode === 'submit') {
+    const ae = allocErrors(b);
+    if (ae.length && d.snap) {                                      // E21: balances moved since the screen was loaded → say so, then show the refreshed reasons
+      const cur = sourceItems(po, d.id), moved = Object.entries(d.snap).some(([k, was]) => { const [kind, ...rest] = k.split(':'), it = cur.find(x => x.kind === kind && x.refId === rest.join(':')); return it && Math.abs((kind === 'grn' ? it.availQty : it.availValue) - was) > EPS; });
+      if (moved) errs.push('Balances changed while you were editing. Review the refreshed amounts and resubmit.');
+    }
+    ae.forEach(e => errs.push(e.msg));
+  }
   else if (!(b.net > 0)) errs.push('Enter an amount or allocation before saving.');
   if (errs.length) return NO(errs, mode === 'submit' ? 'Submission blocked by the validation gate.' : 'Cannot save draft.');
   let inv = d.id && getInv(d.id);
@@ -764,6 +843,7 @@ A.saveInvoice = (d, mode) => {                  // mode: 'draft' | 'submit'
     db.invoices.push(inv);
   }
   const was = isLive(inv);
+  if (d.idemKey) inv.idemKey = d.idemKey;
   Object.assign(inv, { number: b.number.trim(), supplierId: po.supplierId, poId: po.id, method: po.billingMethod, date: b.date, dueDate: b.dueDate || '', net: b.net, gstRate: b.gstRate, discountPct: b.discountPct, discount: b.discount, gst: b.gst, tcs: b.tcs, roundOff: b.roundOff, gross: b.gross, gstCredit: !!d.gstCredit, createAsn: !!d.createAsn, costAlloc: d.costAlloc || { type: '', rows: [] }, remarks: d.remarks || '', attachments: d.attachments || [], allocs: b.allocs.map(a => ({ id: a.id || uid('al'), kind: a.kind, refId: a.refId, qty: a.qty ?? null, value: a.value })) });
   if (mode === 'draft') { audit(po.id, invRef(inv), `${invRef(inv)} saved as draft (no allocation reserved).`, 'inv'); save(); return OK(`${invRef(inv)} saved as draft`, { id: inv.id }); }
   inv.submittedAt = nowISO();
@@ -771,6 +851,12 @@ A.saveInvoice = (d, mode) => {                  // mode: 'draft' | 'submit'
   setStatus(inv, 'Pending Matching');
   if (d.autoMatch !== false) A.runMatching(inv.id, true);
   save(); return OK(`${invRef(inv)} submitted`, { id: inv.id });
+};
+A.expireStaleInvoices = (hours = STALE_HOURS) => {
+  const cut = Date.now() - hours * 36e5; let n = 0;
+  db.invoices.forEach(i => { if (['Submitted', 'Pending Matching'].includes(i.status) && !i.reversed && new Date(i.submittedAt || i.createdAt).getTime() < cut) {
+    setStatus(i, 'Matching Failed', `Timed out after ${hours}h in ${i.status}`); audit(i.poId, invRef(i), `${invRef(i)} stayed in ${i.history[i.history.length - 2]?.to || 'matching'} for more than ${hours}h — moved to Matching Failed and its allocation released.`, 'bad'); n++; } });
+  if (n) save(); return n;
 };
 A.runMatching = (id, quiet) => {
   const inv = getInv(id); if (!inv) return NO('Invoice not found.');
