@@ -106,7 +106,8 @@ function openMsModal(idx) {
   const opt3 = (name, on, title, desc) => `<label class="check-row accbox"><input type="checkbox" name="${name}" ${on ? 'checked' : ''}> <span><b>${title}</b><span class="hint" style="display:block">${desc}</span></span></label>`;
   const ov = openModal({ title: edit ? `Edit milestone M${idx + 1}` : 'Add Milestone', submitLabel: edit ? 'Save' : 'Add', cls: 'wide', html: `<p style="margin:-6px 0 14px;font-size:12.5px">fill out the details</p>
     ${fld('Milestone name', 'name', { value: m.name, ph: 'e.g. Commissioning certificate', req: 1 })}
-    <div class="fgrid">${fld('% of PO value', 'pct', { type: 'number', step: 'any', value: m.pct, req: 1, hint: '<span id="mm-amt"></span>' })}${fld('Due date', 'planned', { type: 'date', value: m.planned })}</div>
+    <div class="fgrid">${fld('Amount (INR)', 'amount', { type: 'number', step: 'any', value: m.pct ? r2((+m.pct || 0) * fVal(f) / 100) : '', hint: `of PO base value ${money(fVal(f))}` })}${fld('% of PO value', 'pct', { type: 'number', step: 'any', value: m.pct, req: 1, hint: 'Enter the amount or the percentage — the other fills in' })}</div>
+    <div class="fgrid">${fld('Due date', 'planned', { type: 'date', value: m.planned })}</div>
     <div class="field"><label>Acceptance required before the milestone value can be invoiced</label>
       ${opt3('needsDoc', m.needsDoc, 'Document approval', 'The supplier uploads the document (e.g. a Commissioning Certificate) with the milestone; the approver approves it. No GRN / SRN is needed for this.')}
       <div id="mm-doc" style="margin:0 0 10px 32px;${m.needsDoc ? '' : 'display:none'}"><input class="input" name="docTitle" value="${esc(m.docTitle || '')}" placeholder="Document name, e.g. Commissioning Certificate"></div>
@@ -116,13 +117,14 @@ function openMsModal(idx) {
     <div class="field">${opt3('allowPartial', m.allowPartial, 'Allow partial invoicing', 'Invoice this milestone in several parts. Each invoice is limited to the remaining approved balance. Off = one invoice for the full amount.')}</div>`,
     onSubmit: v => {
       if (!String(v.name || '').trim()) { toast('Enter the milestone name', 'err'); return false; }
-      if (!(+v.pct > 0)) { toast('Enter a percentage greater than zero', 'err'); return false; }
+      if (!(+v.pct > 0)) { toast('Enter an amount or percentage greater than zero', 'err'); return false; }
       const n = { ...(edit ? m : {}), name: v.name.trim(), pct: +v.pct, planned: v.planned || '', needsDoc: !!v.needsDoc, docTitle: v.needsDoc ? (String(v.docTitle || '').trim() || 'Supporting document') : '', needsGrn: !!v.needsGrn, needsSrn: !!v.needsSrn, allowPartial: !!v.allowPartial };
       if (edit) f.milestones[idx] = n; else f.milestones.push(n);
       render();
     } });
-  const tot = fVal(f), pi = ov.querySelector('[name=pct]'), amt = ov.querySelector('#mm-amt'), doc = ov.querySelector('#mm-doc');
-  const upd = () => { amt.textContent = `= ${money(r2((+pi.value || 0) * tot / 100))}`; }; pi.addEventListener('input', upd); upd();
+  const tot = fVal(f), pi = ov.querySelector('[name=pct]'), ai = ov.querySelector('[name=amount]'), doc = ov.querySelector('#mm-doc');
+  pi.addEventListener('input', () => { ai.value = tot ? r2((+pi.value || 0) * tot / 100) : ''; });
+  ai.addEventListener('input', () => { pi.value = tot ? Math.round((+ai.value || 0) / tot * 1e6) / 1e4 : ''; });
   ov.querySelector('[name=needsDoc]').addEventListener('change', e => { doc.style.display = e.target.checked ? '' : 'none'; });
 }
 ACT['ms-edit'] = el => openMsModal(+el.dataset.i);

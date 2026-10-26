@@ -169,7 +169,7 @@ function openMenu(btn, items) {
 const COLOR = {
   'Not Uploaded': 'gray',
   Approved: 'green', Accepted: 'green', Paid: 'green', Certified: 'green', Eligible: 'green', Matched: 'green', Passed: 'green', Completed: 'green',
-  Posted: 'blue', Submitted: 'blue', 'Pending Matching': 'blue',
+  Posted: 'blue', Submitted: 'blue', 'Pending Matching': 'blue', 'In Progress': 'blue', 'Submitted for Approval': 'blue', 'Under Review': 'amber', 'Partially Invoiced': 'purple', None: 'gray',
   'Info Requested': 'amber', 'Pending Approval': 'amber', 'Pending Inspection': 'amber', 'Pending Acceptance': 'amber', 'Partially Accepted': 'amber', 'Partially Matched': 'amber', Pending: 'amber', 'Awaiting payment': 'amber',
   Draft: 'gray', Cancelled: 'gray', Closed: 'gray', 'Not Eligible': 'gray', 'Not started': 'gray', 'Not posted to AP': 'gray',
   Rejected: 'red', 'Matching Failed': 'red', Blocked: 'red', Failed: 'red', Reversed: 'red', Invoiced: 'purple', Reserved: 'amber', Committed: 'green',
@@ -283,7 +283,7 @@ const NAV = [
 ];
 const approvalCount = () => db.invoices.filter(i => i.status === 'Pending Approval').length + db.pos.filter(p => p.status === 'Pending Approval').length
   + db.grns.filter(g => g.status === 'Pending Inspection').length + db.srns.filter(s => s.status === 'Pending Acceptance').length
-  + db.milestones.filter(m => m.status === 'Pending Approval' || docState(m) === 'Pending Approval').length + db.claims.filter(c => c.status === 'Submitted').length;
+  + db.milestones.filter(msAwaiting).length + db.claims.filter(c => c.status === 'Submitted').length;
 function renderSidebar() {
   const root = ui.r.parts[0] || 'pos';
   document.querySelector('.app').classList.toggle('sb-collapsed', !!ui.sbCollapsed);

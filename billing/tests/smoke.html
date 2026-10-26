@@ -21,7 +21,7 @@ for (const scn of ['default', 'A', 'B']) {
     if (po.status === 'Approved') {
       panel('inv ' + po.number, () => openInvPanel({ poId: po.id }));
       panel('amend ' + po.number, () => { ACT['po-amend']({ dataset: { id: po.id } }); document.querySelector('.overlay')?.remove(); });
-      if (isGoods(po)) panel('grn ' + po.number, () => openGrnPanel(po.id)); else panel('srn ' + po.number, () => openSrnPanel(po.id));
+      if (hasGoods(po)) panel('grn ' + po.number, () => openGrnPanel(po.id)); if (hasServices(po)) panel('srn ' + po.number, () => openSrnPanel(po.id));
       if (poCertified(po)) panel('claim-new ' + po.number, () => ACT['claim-new']({ dataset: { po: po.id } }));
     }
     msOf(po).forEach(m => panel('ms ' + m.code + ' ' + po.number, () => openMilestonePanel(m.id)));

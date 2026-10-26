@@ -20,96 +20,96 @@ const mainText = () => document.getElementById('main').textContent;
 const msModal = (act, i, vals) => { click(`.panel [data-act="${act}"]` + (i != null ? `[data-i="${i}"]` : '')); const f = $q('.overlay form'); Object.entries(vals).forEach(([k, v]) => { const el = f.querySelector(`[name=${k}]`); if (el.type === 'checkbox') { el.checked = v; el.dispatchEvent(new Event('change', { bubbles: true })); } else el.value = v; }); submitModal(); };
 const run = (name, fn) => { try { fn(); } catch (e) { T(name + ' threw', false, e.message + ' @ ' + (e.stack || '').split('\n')[1]); } };
 
-/* ===== 1. GOODS PO on milestones: the GRN gate (the bug that started this) ===== */
-run('goods milestone flow', () => {
-  seedDb('B'); nav('pos');
-  openPoPanel('po-1042');
-  T('edit drawer loads the Goods milestone schedule', ui.f.type === 'Goods' && ui.f.milestones.length === 3 && ui.f.milestones[1].needsReceipt === true);
-  T('acceptance chips say GRN (not SRN) on a goods PO', panelText().includes('Accepted GRN') && !panelText().includes('Accepted SRN') && panelText().includes('Commissioning Certificate approved'));
-  click('[data-act="po-submit"]'); T('PO submitted for approval', PO('po-1042').status === 'Pending Approval', PO('po-1042').status);
-  nav('po/po-1042'); ACT['po-approve']({ dataset: { id: 'po-1042' } }); submitModal(); T('PO approved', PO('po-1042').status === 'Approved');
-  const [m1, m2] = msOf(PO('po-1042'));
-  nav('po/po-1042?tab=receipts'); T('goods PO offers Create GRN, never Create SRN', mainText().includes('Create GRN') && !mainText().includes('Create SRN'));
-  nav('po/po-1042?tab=billing'); T('a new milestone starts as Pending Approval with an Approve button on its row', getMS(m1.id).status === 'Pending Approval' && !!$q('#main [data-act="ms-approve"]'));
-  T('Mark complete is not offered before approval', !mainText().includes('Mark complete')); click('#main [data-act="ms-approve"]'); submitModal(); T('M1 approved from the schedule row', getMS(m1.id).status === 'Approved');
-  T('after approval the row offers Mark complete', mainText().includes('Mark complete')); openMilestonePanel(m1.id); T('drawer shows the completion form', panelText().includes('Mark as complete')); click('.panel [data-act="ms-complete"]'); T('M1 marked complete', getMS(m1.id).status === 'Completed'); closePanel();
-  T('completed M1 counts toward the PO', poSummary(PO('po-1042')).accepted === 20000);
-  openMilestonePanel(m1.id);
-  T('M1 shows "Submit Invoice for M1"', panelText().includes('Submit Invoice for M1'));
-  click('.panel [data-act="inv-new"]'); T('invoice drawer opened with M1 preselected', ui.f.alloc['milestone:' + m1.id]?.on === true);
-  setv('number', 'BIE-M1'); T('live preview shows INR 20,000 + GST', panelText().includes('20,000') && panelText().includes('3,600') && panelText().includes('23,600'), panelText().slice(0, 300));
-  click('[data-act="inv-save"][data-m="submit"]'); T('M1 invoice created, pending approval', db.invoices.some(i => i.number === 'BIE-M1' && i.status === 'Pending Approval'));
-  T('moved to the invoice page, matching shown', location.hash.startsWith('#/invoice/') && mainText().includes('Matched'));
-  /* M2: approved but no GRN */
-  closePanel(); nav('po/po-1042?tab=billing'); openMilestonePanel(m2.id); click('.panel [data-act="ms-approve"]'); submitModal();
-  T('M2 approved but "waiting for the GRN"', panelText().includes('Acceptance in progress') && panelText().includes('accepted GRN') && !!$q('.panel .panel-foot [data-act="ms-complete"][disabled]'), panelText().slice(0, 300));
-  T('M2 offers "Create GRN for M2" not SRN', panelText().includes('Create GRN for M2') && !panelText().includes('Create SRN'));
-  click('.panel [data-act="grn-new"]'); T('GRN drawer opens for the PO, milestone preselected', ui.f.poId === 'po-1042' && ui.f.milestoneId === m2.id);
-  setv('rows.' + PO('po-1042').lines[0].id + '.received', 100); T('GRN validation passes for the full quantity', !panelText().includes('Cannot complete'), panelText().slice(300, 700));
-  click('[data-act="grn-save"][data-m="inspect"]');
-  T('GRN created pending inspection and linked to M2', db.grns.some(g => g.poId === 'po-1042' && g.status === 'Pending Inspection' && g.milestoneId === m2.id) && getMS(m2.id).receiptId);
-  T('gate still closed while inspection pending', msBilling(getMS(m2.id), PO('po-1042')) === 'Not Eligible');
-  const g = db.grns.find(x => x.poId === 'po-1042'); closePanel(); openReceiptPanel('grn', g.id); click('[data-act="grn-accept"]'); submitModal();
-  T('GRN accepted from its drawer', getGRN(g.id).status === 'Accepted');
-  T('accepted GRN alone does not make M2 billable', msBilling(getMS(m2.id), PO('po-1042')) === 'Not Eligible'); openMilestonePanel(m2.id); click('.panel [data-act="ms-complete"]'); T('M2 now invoice-eligible after Mark complete', msBilling(getMS(m2.id), PO('po-1042')) === 'Eligible');
-  closePanel(); openInvPanel({ poId: 'po-1042', msId: m2.id }); setv('number', 'BIE-M2'); click('[data-act="inv-save"][data-m="submit"]');
-  T('M2 invoice submitted', db.invoices.some(i => i.number === 'BIE-M2' && i.status === 'Pending Approval'));
+const sample = () => click('.panel [data-act="add-sample"]');
+const msRow = id => `#main [data-act="ms-approve"][data-id="${id}"]`;
+const addInvLine = id => { click('.panel [data-act="inv-line-add"]'); const cb = $q(`.overlay input[data-pick="${id}"]`); if (!cb) { document.querySelector('.overlay')?.remove(); return false; } cb.click(); submitModal(); return true; };
+
+/* ===== 1. ACCEPTANCE TEST: certificate-only milestone (10,000) on a goods PO — invoiceable on approval, no GRN invented ===== */
+run('document-only milestone', () => {
+  seedDb('default'); nav('po/po-1045?tab=billing'); const po = PO('po-1045'), c = msOf(po)[1], grns0 = db.grns.filter(g => g.poId === po.id).length;
+  T('milestone is a 10,000 certificate with no GRN / SRN required', c.amount === 10000 && c.needsDoc && !c.needsGrn && !c.needsSrn && c.status === 'Submitted for Approval');
+  T('not invoiceable before approval', msBilling(c, po) === 'Not Eligible' && msEnt(c, po) === 0);
+  T('row offers Approve', !!$q(msRow(c.id))); click(msRow(c.id)); submitModal();
+  T('approved by the approver', getMS(c.id).status === 'Approved' && getMS(c.id).doc.status === 'Approved');
+  T('10,000 becomes invoiceable on certificate approval alone', msBilling(getMS(c.id), po) === 'Eligible' && msEnt(getMS(c.id), po) === 10000);
+  T('no GRN was fabricated', db.grns.filter(g => g.poId === po.id).length === grns0);
+  T('row now offers Invoice', !!$q(`#main [data-act="inv-new"][data-ms="${c.id}"]`)); click(`#main [data-act="inv-new"][data-ms="${c.id}"]`);
+  T('invoice drawer opens with the milestone preselected at 10,000', ui.f.alloc['milestone:' + c.id]?.on === true && ui.f.alloc['milestone:' + c.id].value === 10000);
+  setv('number', 'CERT-1'); click('[data-act="inv-save"][data-m="submit"]');
+  T('invoice created for 10,000', db.invoices.some(i => i.number === 'CERT-1' && i.status === 'Pending Approval' && i.net === 10000));
+  closePanel(); openInvPanel({ poId: po.id }); T('billed milestone is not offered again (no duplicate invoicing)', addInvLine('milestone:' + c.id) === false); closePanel();
+  T('a second invoice is refused by the engine', !A.saveInvoice({ poId: po.id, number: 'CERT-2', date: todayISO(), attachments: [], allocs: [{ kind: 'milestone', refId: c.id, qty: null, value: 10000 }], net: 0, autoMatch: true }, 'submit').ok);
 });
 
-
-/* ===== 1b. DOCUMENT EVIDENCE: "Commissioning Certificate" on a goods PO — no dummy GRN ===== */
-run('document acceptance flow', () => {
-  seedDb('default'); nav('po/po-1043?tab=billing'); const c3 = msOf(PO('po-1043'))[2], grns0 = db.grns.filter(g => g.poId === 'po-1043').length;
-  T('M3 row shows the Commissioning Certificate requirement (no GRN/SRN)', mainText().includes('Commissioning Certificate') && getMS(c3.id).needsDoc && !getMS(c3.id).needsReceipt);
-  click(`#main [data-act="ms-approve"][data-id="${c3.id}"]`); submitModal(); T('M3 approved', getMS(c3.id).status === 'Approved');
-  T('row now offers Upload document', mainText().includes('Upload document'));
-  openMilestonePanel(c3.id); T('document card is shown and Mark complete is locked', panelText().includes('Commissioning Certificate') && !!$q('.panel .panel-foot [data-act="ms-complete"][disabled]'));
-  click('.panel [data-act="add-sample"]'); click('.panel .card [data-act="ms-doc-upload"]'); T('certificate uploaded, awaiting approval', docState(getMS(c3.id)) === 'Pending Approval');
-  T('approver actions appear for the uploaded document', !!$q('.panel .card [data-act="ms-doc-approve"]') && !!$q('.panel .card [data-act="ms-doc-reject"]'));
-  click('.panel .card [data-act="ms-doc-reject"]'); $q('.overlay textarea').value = 'Signature missing'; submitModal(); T('certificate rejected with a reason', docState(getMS(c3.id)) === 'Rejected' && panelText().includes('Signature missing'));
-  T('supplier can re-upload after rejection', !!$q('.panel .card [data-act="ms-doc-upload"]'));
-  click('.panel [data-act="add-sample"]'); click('.panel .card [data-act="ms-doc-upload"]'); T('corrected version uploaded (v2)', getMS(c3.id).doc.version === 2 && docState(getMS(c3.id)) === 'Pending Approval');
-  click('.panel .card [data-act="ms-doc-approve"]'); submitModal(); T('certificate approved', docState(getMS(c3.id)) === 'Approved');
-  T('Mark complete is now enabled', !!$q('.panel .panel-foot [data-act="ms-complete"]:not([disabled])'));
-  click('.panel .panel-foot [data-act="ms-complete"]'); T('M3 completed', getMS(c3.id).status === 'Completed');
-  T('no goods receipt was created for the certificate', db.grns.filter(g => g.poId === 'po-1043').length === grns0);
-  click('.panel [data-act="inv-new"]'); setv('number', 'CC-1'); T('M3 preselected in the invoice drawer', ui.f.alloc['milestone:' + c3.id]?.on === true); click('[data-act="inv-save"][data-m="submit"]');
-  T('milestone invoiced', db.invoices.some(i => i.number === 'CC-1' && i.status === 'Pending Approval' && i.net === c3.amount));
-  closePanel(); openInvPanel({ poId: 'po-1043' }); click('.panel [data-act="inv-line-add"]'); T('invoiced milestone is not offered again (no duplicate invoicing)', !$q(`.overlay input[data-pick="milestone:${c3.id}"]`)); document.querySelector('.overlay')?.remove(); closePanel();
+/* ===== 2. Full lifecycle through the UI: Pending → In Progress → Submitted → Under Review → Rejected → resubmit → Approved ===== */
+run('milestone lifecycle', () => {
+  seedDb('default'); nav('po/po-1043?tab=billing'); const po = PO('po-1043'), m = msOf(po)[2];
+  T('M3 starts Pending with a Start button', m.status === 'Pending' && !!$q(`#main [data-act="ms-start"][data-id="${m.id}"]`)); click(`#main [data-act="ms-start"][data-id="${m.id}"]`); T('In Progress', getMS(m.id).status === 'In Progress');
+  openMilestonePanel(m.id); click('.panel .panel-foot [data-act="ms-submit"]'); T('submit without the mandatory certificate is refused', getMS(m.id).status === 'In Progress');
+  sample(); click('.panel .panel-foot [data-act="ms-submit"]'); T('Submitted for Approval with evidence', getMS(m.id).status === 'Submitted for Approval' && docState(getMS(m.id)) === 'Pending Approval');
+  click('.panel [data-act="ms-review"]'); T('Under Review', getMS(m.id).status === 'Under Review');
+  click('.panel .card [data-act="ms-reject"]'); $q('.overlay textarea').value = 'Signature missing'; submitModal(); T('Rejected with a reason', getMS(m.id).status === 'Rejected' && panelText().includes('Signature missing'));
+  sample(); click('.panel .panel-foot [data-act="ms-submit"]'); T('resubmitted (submission 2)', getMS(m.id).status === 'Submitted for Approval' && getMS(m.id).submissions.length === 2);
+  click('.panel .card [data-act="ms-approve"]'); submitModal(); T('Approved, certificate approved with it', getMS(m.id).status === 'Approved' && docState(getMS(m.id)) === 'Approved');
+  T('audit trail records the transitions', db.audit.filter(x => x.text && x.text.includes(m.code)).length >= 5);
+  closePanel(); nav('approvals?tab=milestones'); T('approvals queue lists submitted milestones (PO 1052 M2)', mainText().includes('Submitted for Approval') || mainText().includes('M2'));
 });
 
-/* ===== 1c. COMBINATION: document + accepted SRN on a services PO ===== */
-run('document + SRN combination', () => {
-  seedDb('default'); nav('po/po-1052?tab=billing'); const h3 = msOf(PO('po-1052'))[2];
-  T('acceptance shows both conditions', mainText().includes('Handover Certificate') && mainText().includes('SRN'));
-  click(`#main [data-act="ms-approve"][data-id="${h3.id}"]`); submitModal();
-  openMilestonePanel(h3.id); click('.panel [data-act="add-sample"]'); click('.panel .card [data-act="ms-doc-upload"]'); click('.panel .card [data-act="ms-doc-approve"]'); submitModal();
-  T('certificate approved but Mark complete stays locked until the SRN is accepted', docState(getMS(h3.id)) === 'Approved' && !!$q('.panel .panel-foot [data-act="ms-complete"][disabled]') && panelText().includes('accepted SRN'));
-  click('.panel [data-act="srn-new"]'); T('SRN drawer opens for this milestone (real service value, not a dummy)', ui.f.milestoneId === h3.id && ui.f.serviceValue === h3.amount);
-  click('.panel [data-act="srn-save"][data-m="accept"]'); T('SRN accepted and linked', getMS(h3.id).receiptId && getSRN(getMS(h3.id).receiptId).status === 'Accepted');
-  openMilestonePanel(h3.id); click('.panel .panel-foot [data-act="ms-complete"]'); T('completed once both conditions are met', getMS(h3.id).status === 'Completed' && msBilling(getMS(h3.id), PO('po-1052')) === 'Eligible');
+/* ===== 3. MILESTONE FIRST: milestone → create its GRN → invoice (document + accepted GRN) ===== */
+run('milestone-first with GRN', () => {
+  seedDb('default'); nav('po/po-1045?tab=billing'); const po = PO('po-1045'), m = msOf(po)[2];
+  openMilestonePanel(m.id); click('.panel [data-act="ms-start"]'); sample(); click('.panel .panel-foot [data-act="ms-submit"]'); click('.panel .card [data-act="ms-approve"]'); submitModal();
+  T('approved, but invoicing blocked until a real GRN is accepted', getMS(m.id).status === 'Approved' && msBilling(getMS(m.id), po) === 'Not Eligible' && panelText().includes('Invoicing stays blocked'));
+  T('milestone offers Create GRN / Link GRN right here', panelText().includes('Create GRN for M3') && panelText().includes('Link existing GRN'));
+  click('.panel [data-act="grn-new"]'); T('GRN drawer opens for this milestone', ui.f.poId === po.id && ui.f.milestoneId === m.id);
+  setv('rows.' + po.lines[0].id + '.received', 1); click('[data-act="grn-save"][data-m="inspect"]');
+  const g = db.grns.find(x => x.milestoneId === m.id); T('GRN created and linked to M3, pending inspection', !!g && g.status === 'Pending Inspection' && getMS(m.id).grnIds.includes(g.id));
+  T('still blocked while inspection is pending', msBilling(getMS(m.id), po) === 'Not Eligible');
+  closePanel(); openReceiptPanel('grn', g.id); click('[data-act="grn-accept"]'); submitModal(); T('GRN accepted', getGRN(g.id).status === 'Accepted');
+  T('milestone is now invoiceable', msBilling(getMS(m.id), po) === 'Eligible'); closePanel(); nav('po/po-1045?tab=billing');
+  click(`#main [data-act="inv-new"][data-ms="${m.id}"]`); setv('number', 'SITE-1'); click('[data-act="inv-save"][data-m="submit"]');
+  T('milestone invoiced for 20,000', db.invoices.some(i => i.number === 'SITE-1' && i.net === 20000)); closePanel();
 });
 
-/* ===== 2. SERVICES PO created from scratch in the drawer, gated on an SRN ===== */
-run('services milestone flow', () => {
+/* ===== 4. PARTIAL invoicing: 50,000 milestone billed in parts, never above the remaining balance ===== */
+run('partial invoicing', () => {
+  seedDb('default'); const po = PO('po-1045'), m = msOf(po)[0], gb = db.grns.find(g => g.poId === po.id && g.status === 'Pending Inspection');
+  T('blocked while a linked GRN is pending', msBilling(m, po) === 'Not Eligible'); openReceiptPanel('grn', gb.id); click('[data-act="grn-accept"]'); submitModal(); closePanel();
+  T('eligible once every linked GRN is accepted', msBilling(getMS(m.id), po) === 'Eligible');
+  openInvPanel({ poId: po.id, msId: m.id }); setv('number', 'PART-1'); setv(`alloc.milestone:${m.id}.value`, 20000); click('[data-act="inv-save"][data-m="submit"]');
+  T('first part (20,000) invoiced', db.invoices.some(i => i.number === 'PART-1' && i.net === 20000)); T('milestone shows Partially Invoiced, 30,000 remaining', msBilling(getMS(m.id), po) === 'Partially Invoiced' && usage('milestone', m.id).value === 20000); closePanel();
+  openInvPanel({ poId: po.id, msId: m.id }); setv('number', 'PART-2'); setv(`alloc.milestone:${m.id}.value`, 40000); click('[data-act="inv-save"][data-m="submit"]');
+  T('over the remaining balance is blocked', !db.invoices.some(i => i.number === 'PART-2' && i.status !== 'Draft' && i.status !== 'Matching Failed') || !db.invoices.some(i => i.number === 'PART-2' && i.status === 'Pending Approval')); document.querySelector('.overlay')?.remove(); closePanel();
+  openInvPanel({ poId: po.id, msId: m.id }); setv('number', 'PART-3'); setv(`alloc.milestone:${m.id}.value`, 30000); click('[data-act="inv-save"][data-m="submit"]');
+  T('the exact remaining 30,000 is accepted', db.invoices.some(i => i.number === 'PART-3' && i.status === 'Pending Approval') && msBilling(getMS(m.id), po) === 'Invoiced'); closePanel();
+  const p1 = db.invoices.find(i => i.number === 'PART-1'); A.cancelInvoice ? A.cancelInvoice(p1.id, 'test') : null;
+  T('cancelling an invoice releases its reservation', usage('milestone', m.id).value === 30000, usage('milestone', m.id).value);
+});
+
+/* ===== 5. MIXED PO: GRN for goods lines, SRN for service lines ===== */
+run('mixed PO', () => {
+  seedDb('default'); nav('po/po-1046?tab=receipts'); const po = PO('po-1046');
+  T('mixed PO offers both Create GRN and Create SRN', mainText().includes('Create GRN') && mainText().includes('Create SRN'));
+  openGrnPanel(po.id); T('GRN drawer lists the goods line only', document.querySelectorAll('.panel [data-f^="rows."]').length >= 1 && !panelText().includes('Installation & piping')); closePanel();
+  openSrnPanel(po.id); T('SRN drawer defaults to the service line', ui.f.lineId === po.lines[1].id); closePanel();
+});
+
+/* ===== 6. Services PO from scratch: amount ↔ percentage in the milestone dialog ===== */
+run('milestone amount option', () => {
   seedDb('default'); nav('pos'); click('[data-act="po-new"]');
-  T('create drawer opens', !!$q('.panel') && panelText().includes('Create PO Order'));
   setv('type', 'Services'); setv('supplierId', 'sup2'); setv('title', 'Annual maintenance'); click('.panel [data-act="ln-add"]'); setv('lines.0.desc', 'Maintenance contract'); setv('lines.0.qty', 1); setv('lines.0.price', 200000);
-  T('total updates live', $q('#li-total').textContent.includes('2,36,000') || $q('#li-total').textContent.includes('236,000'), $q('#li-total').textContent);
   click('[data-act="po-method"][data-m="Milestone"]'); T('example schedule loaded', ui.f.milestones.length === 3);
-  T('services acceptance chips say SRN', panelText().includes('Accepted SRN') && !panelText().includes('Accepted GRN'));
-  msModal('ms-edit', 2, { pct: 40 }); T('invalid schedule is flagged live', $q('#ms-sum').textContent.includes('110%'), $q('#ms-sum').textContent);
-  click('[data-act="po-submit"]'); T('invalid schedule blocks the PO', !db.pos.some(p => p.title === 'Annual maintenance') && ($q('.toast.err') || $q('.overlay'))?.textContent.includes('110%'), ($q('.toast.err') || $q('.overlay') || {}).textContent); document.querySelector('.overlay')?.remove();
-  msModal('ms-edit', 2, { pct: 30 }); click('[data-act="po-submit"]');
-  const po = db.pos.find(p => p.title === 'Annual maintenance'); T('PO created pending approval', po && po.status === 'Pending Approval');
-  T('amounts add up exactly', msOf(po).reduce((s, m) => s + m.amount, 0) === 200000, msOf(po).map(m => m.amount));
-  nav('po/' + po.id); ACT['po-approve']({ dataset: { id: po.id } }); submitModal(); T('approved', po.status === 'Approved');
-  const m2 = msOf(po)[1]; nav('po/' + po.id + '?tab=receipts'); T('services PO offers Create SRN, never Create GRN', mainText().includes('Create SRN') && !mainText().includes('Create GRN'));
-  openMilestonePanel(m2.id); click('.panel [data-act="ms-approve"]'); submitModal();
-  T('M2 approved but waiting for the SRN', panelText().includes('Acceptance in progress') && panelText().includes('accepted SRN'));
-  click('.panel [data-act="srn-new"]'); T('SRN drawer prefilled from the milestone', ui.f.serviceValue === m2.amount && ui.f.milestoneId === m2.id, JSON.stringify(ui.f));
-  click('[data-act="srn-save"][data-m="accept"]'); T('SRN completed and linked', getMS(m2.id).receiptId && getSRN(getMS(m2.id).receiptId).status === 'Accepted');
-  openMilestonePanel(m2.id); click('.panel [data-act="ms-complete"]'); T('M2 eligible after the SRN and completion', msBilling(getMS(m2.id), po) === 'Eligible');
+  click('.panel [data-act="ms-edit"][data-i="2"]'); const f = $q('.overlay form'), ai = f.querySelector('[name=amount]'), pi = f.querySelector('[name=pct]');
+  T('dialog has an Amount field next to the percentage', !!ai && !!pi && +ai.value === 60000);
+  ai.value = 80000; ai.dispatchEvent(new Event('input', { bubbles: true })); T('typing an amount fills the percentage', +pi.value === 40, pi.value);
+  pi.value = 30; pi.dispatchEvent(new Event('input', { bubbles: true })); T('typing a percentage fills the amount', +ai.value === 60000, ai.value);
+  ai.value = 80000; ai.dispatchEvent(new Event('input', { bubbles: true })); submitModal(); T('amount saved as 40%', ui.f.milestones[2].pct === 40);
+  T('invalid schedule is flagged live', $q('#ms-sum').textContent.includes('110%'), $q('#ms-sum').textContent);
+  click('[data-act="po-submit"]'); T('invalid schedule blocks the PO', !db.pos.some(p => p.title === 'Annual maintenance')); document.querySelector('.overlay')?.remove();
+  click('.panel [data-act="ms-edit"][data-i="2"]'); const f2 = $q('.overlay form'); f2.querySelector('[name=amount]').value = 60000; f2.querySelector('[name=amount]').dispatchEvent(new Event('input', { bubbles: true })); submitModal(); click('[data-act="po-submit"]');
+  const po = db.pos.find(p => p.title === 'Annual maintenance'); T('PO created', po && po.status === 'Pending Approval'); T('amounts add up exactly', msOf(po).reduce((s, x) => s + x.amount, 0) === 200000, msOf(po).map(x => x.amount));
+  nav('po/' + po.id); ACT['po-approve']({ dataset: { id: po.id } }); submitModal(); T('approved; milestones start Pending', po.status === 'Approved' && msOf(po).every(x => x.status === 'Pending'));
+  nav('po/' + po.id + '?tab=receipts'); T('services PO offers Create SRN, never Create GRN', mainText().includes('Create SRN') && !mainText().includes('Create GRN'));
 });
 
 /* ===== 3. Progressive receipt-based billing through the invoice drawer ===== */

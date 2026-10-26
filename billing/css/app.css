@@ -618,3 +618,4 @@ select.input.sm{padding-right:30px;background-position:right 10px center}
 .acc-chip.rec{background:#E3F2FD;color:#1B5FA6}
 .accbox{align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fff}
 .accbox input{margin-top:3px}
+.acc-chip.part{background:#EDE7F6;color:#5B3FA0}

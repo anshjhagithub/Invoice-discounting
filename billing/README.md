@@ -38,12 +38,14 @@ The gate follows the PO type everywhere — labels, buttons, validation and matc
 - PO tabs: Overview · Line Items · Milestones / Progress Claims / Billing · GRN or SRN · Invoices · History. **What's next** tells you the next action on the PO.
 - Removed options: payment terms, per-line codes / tax codes / locations, currency picker, approver / criteria / evidence-required fields, reorder arrows, finalize / unlock, “run matching on submit”, VAT override.
 
-## Milestone lifecycle (simple, mirrors the PO)
-`Pending Approval → Approved → (receipt check) → Completed`
-1. **Approve** — once the PO is approved, each milestone is approved by the approver (button on its row and in its drawer; **Reject** is also available).
-2. **Receipt check** — if the milestone needs a GRN (Goods) / SRN (Services), that receipt must be linked and *Accepted*. **Mark complete** stays locked until then.
-3. **Mark complete** — done by the project owner / vendor; this is what makes the milestone **billable** and what counts toward the PO's accepted value, stage tracker and balances.
-4. **Invoice** — only a *Completed* milestone with a clear gate can be invoiced, once, in full. If its receipt is later reversed or rejected, it stops being billable again.
+## Milestone lifecycle (current)
+`Pending → In Progress → Submitted for Approval → Under Review → Approved` (or `Rejected → resubmit`)
+1. **Start / Submit** — supplier (or receiver) starts the work and submits evidence with a completion date. If the milestone needs a document (e.g. *Commissioning Certificate*) the upload is mandatory.
+2. **Review / Approve / Reject** — an approver reviews and decides; approving also approves the evidence document. The submitting role cannot decide (segregation of duties; Demo Admin is exempt). Every step is time-stamped in the audit trail.
+3. **Acceptance conditions** (set per milestone, any combination): *document approval*, *accepted GRN(s)*, *accepted SRN(s)*. A GRN/SRN is never created to prove a certificate; a pending receipt blocks, a rejected/reversed one never counts.
+4. **Invoice** — a milestone is billable only when *Approved* **and** every condition holds. Milestones that allow **partial invoicing** can be billed in parts up to the remaining balance; otherwise once, in full. Approved / invoiced-approved / reserved / remaining are shown separately. Cancelling or rejecting an invoice releases its reservation; a posted invoice is undone with **Reverse via credit note**.
+5. **Milestone first** — from the milestone drawer you can *Create GRN / SRN for this milestone* (or link an existing one, several allowed) and then *Submit Invoice for this milestone*. The invoice drawer's *+ Add Line Item* works the other way round.
+6. **Create PO** — each milestone takes an **amount or a percentage** (they update each other); PO types are Goods, Services and **Mixed** (GRN for goods lines, SRN for service lines).
 
 ## Round 2 — PRD alignment and DICE fidelity
 - **Milestone approval is now visible everywhere**: an **Approve** button on the schedule row (Milestones tab), a **Your decision** card at the top of the milestone drawer (Approve / Request information / Reject), the drawer footer, the *What's next* card and the Approvals queue. A pending milestone shows **Mark complete** on its row.

@@ -8,7 +8,7 @@ ROUTES.overview = () => {
   const submitted = sum(invs.filter(i => SUBMITTED_SET.includes(i.status)), i => i.net), approved = sum(invs.filter(i => APPROVED.includes(i.status)), i => i.net), paid = sum(invs.filter(i => i.status === 'Paid'), i => i.net);
   const blocked = invs.filter(i => i.status === 'Matching Failed').length, pendInv = invs.filter(i => i.status === 'Pending Approval').length;
   const pendRcpt = db.grns.filter(g => g.status === 'Pending Inspection').length + db.srns.filter(s => s.status === 'Pending Acceptance').length;
-  const pendMs = db.milestones.filter(m => m.status === 'Pending Approval' || docState(m) === 'Pending Approval').length, pendClaims = db.claims.filter(c => c.status === 'Submitted').length, pendPO = db.pos.filter(p => p.status === 'Pending Approval').length;
+  const pendMs = db.milestones.filter(msAwaiting).length, pendClaims = db.claims.filter(c => c.status === 'Submitted').length, pendPO = db.pos.filter(p => p.status === 'Pending Approval').length;
   const gatedMs = db.milestones.filter(m => { const po = getPO(m.poId); return m.status === 'Approved' && po && !msGate(m, po).ok; });
   const tile = (k, v, s, href, cls = '') => `<button class="tile ${cls}" data-act="go" data-hash="${href}"><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s}</div></button>`;
   const maxV = val || 1, fr = (label, v, color) => `<div class="fr"><div>${label}</div><div class="fb"><span style="width:${pct(v, maxV).toFixed(1)}%;background:${color}"></span></div><div class="num strong">${money(v)}</div></div>`;

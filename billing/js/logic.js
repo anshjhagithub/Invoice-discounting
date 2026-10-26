@@ -130,6 +130,7 @@ function validateSRN(d) {
    Any combination (or none) can be required. */
 const docTitleOf = m => m.docTitle || 'Supporting document';
 const docState = m => !m.doc || !(m.doc.files || []).length ? 'Not Uploaded' : m.doc.status;           // Not Uploaded | Pending Approval | Approved | Rejected
+const msAwaiting = m => ['Submitted for Approval', 'Under Review'].includes(m.status);
 const MS_STATES = ['Pending', 'In Progress', 'Submitted for Approval', 'Under Review', 'Approved', 'Rejected'];
 const msLocked = m => usage('milestone', m.id).value > EPS || ['Submitted for Approval', 'Under Review', 'Approved'].includes(m.status);
 function recCond(m, kind) {
