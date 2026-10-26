@@ -1,29 +1,41 @@
-<!doctype html><html><head><meta charset="utf-8"><title>smoke</title></head><body>
-<div class="app"><aside id="sidebar"></aside><main id="main"></main></div><div id="toasts"></div><pre id="out">running…</pre>
+<!doctype html><html><head><meta charset="utf-8"><title>smoke</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
+<div class="app"><aside id="sidebar" class="sidebar"></aside><main id="main" class="main"></main></div><div id="toasts" class="toast-stack"></div><pre id="out">running…</pre>
 <script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
 <script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script>
 <script>
-const out = []; const errs = [];
-window.addEventListener('error', e => errs.push('ERR ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno));
+/* Renders every route, every PO tab, every drawer for every record and fails on any screen / panel error. */
+const log = []; let routes = 0, panels = 0, bad = 0;
+const fail = m => { bad++; log.push('FAIL ' + m); };
+window.addEventListener('error', e => fail('ERR ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno));
 try { localStorage.clear(); } catch (e) {}
-seedDb('default');
-const routes = ['dashboard', 'pos', 'po/new', 'po/po-1042', 'po/po-1042?tab=lines', 'po/po-1042?tab=billing', 'po/po-1042?tab=receipts', 'po/po-1042?tab=invoices', 'po/po-1042?tab=audit',
-  'po/po-1043?tab=billing', 'po/po-1060?tab=billing', 'po/po-1044?tab=billing', 'po/po-1061', 'po/po-1052?tab=billing', 'grns', 'grn/new?po=po-1042', 'srns', 'srn/new?po=po-1051', 'srn/new?po=po-1052&ms=ms-1052-1', 'milestones', 'milestone/ms-1052-1', 'milestone/ms-1052-2', 'milestone/ms-1043-1',
-  'claims', 'claim/new?po=po-1060', 'claim/pc-1060-2', 'invoices', 'invoice/new?po=po-1042', 'invoice/new?po=po-1043&ms=ms-1043-1', 'invoice/new?po=po-1060', 'invoice/new?po=po-1044', 'invoice/new?po=po-1051', 'matching', 'approvals', 'approvals?tab=receipts', 'approvals?tab=milestones', 'approvals?tab=pos', 'approvals?tab=claims', 'ap', 'schedules', 'invoices?status=Matching+Failed'];
-db.invoices.forEach(i => { routes.push('invoice/' + i.id, 'matching/' + i.id); });
-db.grns.forEach(g => routes.push('grn/' + g.id)); db.srns.forEach(s => routes.push('srn/' + s.id));
-routes.push('po/po-1042/edit');
-const ids = routes.slice();
-function step(i) {
-  if (i >= ids.length) { document.getElementById('out').textContent = (errs.length ? errs.join('\n') + '\n' : '') + out.join('\n') + '\nDONE routes=' + ids.length; return; }
-  const h = ids[i]; location.hash = '#/' + h; render();
-  const m = document.getElementById('main'); const bad = m.innerHTML.includes('Screen error') || m.innerHTML.length < 200;
-  if (bad) out.push('BAD ' + h + ' :: ' + m.textContent.slice(0, 200));
-  step(i + 1);
+const txt = () => document.getElementById('main').textContent + document.getElementById('sidebar').textContent;
+const route = h => { routes++; location.hash = h; render(); if (document.querySelector('#main .alert.err .at')?.textContent === 'Screen error') fail('route ' + h + ': ' + document.querySelector('#main .alert.err').textContent); if (txt().includes('undefined') || txt().includes('NaN') || txt().includes('[object')) fail('route ' + h + ': contains undefined/NaN/[object]'); };
+const panel = (name, fn) => { panels++; try { fn(); } catch (e) { fail('panel ' + name + ': ' + e.message); } if (document.querySelector('.panel .alert.err .at')?.textContent === 'Panel error') fail('panel ' + name + ': ' + document.querySelector('.panel .alert.err').textContent); const t = document.querySelector('.panel')?.textContent || ''; if (/undefined|NaN|\[object/.test(t)) fail('panel ' + name + ': contains undefined/NaN/[object] :: ' + (t.match(/.{30}(undefined|NaN|\[object).{20}/) || [''])[0]); closePanel(); };
+for (const scn of ['default', 'A', 'B']) {
+  seedDb(scn); log.push('-- scenario ' + scn);
+  ['#/overview', '#/pos', '#/pos?tab=all', '#/pos?tab=past', '#/receipts', '#/receipts?tab=pending', '#/invoices', '#/invoices?tab=all', '#/approvals', '#/approvals?tab=receipts', '#/approvals?tab=milestones', '#/approvals?tab=claims', '#/approvals?tab=pos', '#/ap', '#/po/missing', '#/invoice/missing'].forEach(route);
+  db.pos.forEach(po => {
+    ['overview', 'lines', 'billing', 'receipts', 'invoices', 'history'].forEach(t => route(`#/po/${po.id}?tab=${t}`));
+    panel('po-view ' + po.number, () => ACT['po-view']({ dataset: { id: po.id } }));
+    if (po.status === 'Draft') panel('po-edit ' + po.number, () => openPoPanel(po.id));
+    if (po.status === 'Approved') {
+      panel('inv ' + po.number, () => openInvPanel({ poId: po.id }));
+      panel('amend ' + po.number, () => { ACT['po-amend']({ dataset: { id: po.id } }); document.querySelector('.overlay')?.remove(); });
+      if (isGoods(po)) panel('grn ' + po.number, () => openGrnPanel(po.id)); else panel('srn ' + po.number, () => openSrnPanel(po.id));
+      if (poCertified(po)) panel('claim-new ' + po.number, () => ACT['claim-new']({ dataset: { po: po.id } }));
+    }
+    msOf(po).forEach(m => panel('ms ' + m.code + ' ' + po.number, () => openMilestonePanel(m.id)));
+    claimsOf(po).forEach(c => panel('claim ' + c.number, () => ACT['claim-open']({ dataset: { id: c.id } })));
+    grnsOf(po).forEach(g => { panel('grn ' + g.number, () => openReceiptPanel('grn', g.id)); panel('ocr ' + g.number, () => { if (po.status === 'Approved') openInvPanel({ recKind: 'grn', recId: g.id, ocr: true }); }); });
+    srnsOf(po).forEach(s => panel('srn ' + s.number, () => openReceiptPanel('srn', s.id)));
+  });
+  db.invoices.forEach(i => { panel('inv-view ' + invRef(i), () => openInvoiceView(i.id)); ['timeline', 'settlement', 'cn', 'dn', 'po', 'holds'].forEach(t => panel('inv-view ' + invRef(i) + ' ' + t, () => { openInvoiceView(i.id); ui.f.tab = t; redrawPanel(); })); route('#/invoice/' + i.id); panel('inv-edit ' + invRef(i), () => { if (['Draft', 'Matching Failed'].includes(i.status)) openInvPanel({ invId: i.id }); }); });
+  panel('po-new', () => openPoPanel(null));
+  panel('po-new milestone', () => { openPoPanel(null); ACT['po-method']({ dataset: { m: 'Milestone' } }); });
+  panel('po-new progressive services', () => { openPoPanel(null); ui.f.type = 'Services'; ACT['po-method']({ dataset: { m: 'Progressive' } }); ACT['po-basis']({ dataset: { b: 'Certified' } }); });
+  panel('grn-new (no PO)', () => openGrnPanel('')); panel('srn-new (no PO)', () => openSrnPanel('')); panel('inv-new (no PO)', () => openInvPanel({ poId: '' }));
+  panel('demo', () => ACT['demo-open']()); document.querySelector('.overlay')?.remove();
 }
-step(0);
-// interactive: draft PO edit page (wizard) steps
-location.hash = '#/po/new'; render();
-for (let s = 2; s <= 4; s++) { ui.f.step = s; ui.f.billingMethod = s === 3 ? 'Milestone' : ui.f.billingMethod; if (s === 3) ACT['po-method']({ dataset: { m: 'Milestone' } }); render(); const m = document.getElementById('main'); if (m.innerHTML.includes('Screen error')) out.push('BAD wizard step ' + s + ' ' + m.textContent.slice(0, 200)); }
-document.getElementById('out').textContent += '\nwizard ok';
+log.push(`routes=${routes} panels=${panels}`);
+document.getElementById('out').textContent = log.join('\n') + '\n' + (bad ? `SMOKE FAILED (${bad})` : 'SMOKE PASSED');
 </script></body></html>

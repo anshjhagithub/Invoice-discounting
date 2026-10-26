@@ -1,9 +1,10 @@
 /* =====================================================================
-   ui.js — router, shell, overlays, shared widgets
+   ui.js — router, shell, drawers (panels), modals, shared widgets, lists, sidebar
    ===================================================================== */
-const ui = { r: { parts: [], q: {} }, f: null, fKey: '', lists: {}, listSig: {}, derive: null, after: null, lastPath: '' };
+const ui = { r: { parts: [], q: {} }, f: null, fKey: '', lists: {}, listSig: {}, derive: null, after: null, lastPath: '', panel: null };
 const ACT = {};          // data-act handlers
 const ROUTES = {};       // first path segment -> render(route) => html
+const HOOKS = {};        // data-hook handlers
 const PER_PAGE = 10;
 const $ = s => document.querySelector(s);
 
@@ -17,23 +18,23 @@ const qs = o => { const p = new URLSearchParams(); Object.entries(o).forEach(([k
 
 function render() {
   closeMenu();
-  const r = parseHash(); const prev = ui.r;
+  const r = parseHash();
   ui.r = r;
   const samePage = ui.lastPath === r.path;
   if (!samePage) { ui.f = null; ui.fKey = ''; closeOverlays(); }
   ui.lastPath = r.path; ui.derive = null; ui.after = null;
   const y = window.scrollY;
-  const fn = ROUTES[r.parts[0] || 'dashboard'] || ROUTES.dashboard;
+  const fn = ROUTES[r.parts[0] || 'pos'] || ROUTES.pos;
   let html;
-  try { html = fn(r); } catch (e) { console.error(e); html = `<div class="content"><div class="alert err" style="margin-top:20px"><div><div class="at">Screen error</div>${esc(e.message)}</div></div></div>`; }
-  $('#main').innerHTML = html;
+  try { html = fn(r); } catch (e) { console.error(e); html = `<div class="page"><div class="alert err"><div><div class="at">Screen error</div>${esc(e.message)}</div></div></div>`; }
+  $('#main').innerHTML = html; $('#main').classList.toggle('enter', !samePage);
   renderSidebar();
   if (ui.after) ui.after();
-  if (ui.derive) ui.derive();
+  if (ui.panel) redrawPanel(); else if (ui.derive) ui.derive();
   window.scrollTo(0, samePage ? y : 0);
 }
 
-/* ---------- form binding ---------- */
+/* ---------- form binding (state lives in ui.f; inputs carry data-f="path") ---------- */
 function setPath(obj, path, val) {
   const k = path.split('.'); let o = obj;
   for (let i = 0; i < k.length - 1; i++) { if (o[k[i]] == null) o[k[i]] = {}; o = o[k[i]]; }
@@ -49,7 +50,6 @@ function handleField(e, isChange) {
   if (el.dataset.hook && HOOKS[el.dataset.hook]) HOOKS[el.dataset.hook](el, v);
   if (rr) render(); else if (ui.derive) ui.derive();
 }
-const HOOKS = {};
 document.addEventListener('input', e => {
   handleField(e, false);
   const lq = e.target.closest('[data-lq]');
@@ -69,7 +69,7 @@ document.addEventListener('click', e => {
   if (el && !el.disabled) { const fn = ACT[el.dataset.act]; if (fn) { if (el.tagName !== 'INPUT') e.preventDefault(); fn(el, e); } else console.warn('No ACT', el.dataset.act); }
   else if (!e.target.closest('.menu')) closeMenu();
 });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeOverlays(); closeMenu(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeMenu(); const m = document.querySelector('.overlay'); if (m) m.remove(); else closePanel(); } });
 
 /* ---------- result handling ---------- */
 function done(r, after) {
@@ -79,20 +79,20 @@ function done(r, after) {
   return false;
 }
 
-/* ---------- overlays ---------- */
+/* ---------- overlays: toast / modal ---------- */
 function toast(msg, kind) {
   const t = document.createElement('div'); t.className = 'toast' + (kind === 'err' ? ' err' : '');
-  t.innerHTML = icon(kind === 'err' ? 'alert' : 'check', 14, 2.2) + `<span>${esc(msg)}</span>`;
+  t.innerHTML = icon(kind === 'err' ? 'alert' : 'check', 16, 2.2) + `<span>${esc(msg)}</span>`;
   $('#toasts').appendChild(t); setTimeout(() => t.remove(), kind === 'err' ? 5200 : 2800);
 }
-function closeOverlays() { document.querySelectorAll('.overlay,.drawer,.drawer-ov').forEach(n => n.remove()); }
+function closeOverlays() { document.querySelectorAll('.overlay').forEach(n => n.remove()); closePanel(); }
 function openModal({ title, html = '', submitLabel = 'Save', onSubmit, cls = '', danger = false, hideFoot = false, cancelLabel = 'Cancel' }) {
   closeMenu();
   const ov = document.createElement('div'); ov.className = 'overlay';
   ov.innerHTML = `<form class="modal ${cls}" novalidate>
-    <div class="modal-head"><h3>${esc(title)}</h3><button type="button" class="kebab x" data-close>${icon('x', 14)}</button></div>
+    <div class="modal-head"><h3>${esc(title)}</h3><button type="button" class="icon-btn" data-close>${icon('x', 18)}</button></div>
     <div class="modal-body">${html}</div>
-    ${hideFoot ? '' : `<div class="modal-foot"><button type="button" class="btn btn-ghost" data-close>${cancelLabel}</button>${onSubmit ? `<button type="submit" class="btn ${danger ? 'btn-danger-soft' : 'btn-primary'}">${esc(submitLabel)}</button>` : ''}</div>`}
+    ${hideFoot ? '' : `<div class="modal-foot"><button type="button" class="btn btn-ghost" data-close>${cancelLabel}</button>${onSubmit ? `<button type="submit" class="btn ${danger ? 'btn-danger' : 'btn-primary'}">${esc(submitLabel)}</button>` : ''}</div>`}
   </form>`;
   document.body.appendChild(ov);
   ov.addEventListener('mousedown', e => { ov._down = e.target === ov; });
@@ -107,34 +107,57 @@ function openModal({ title, html = '', submitLabel = 'Save', onSubmit, cls = '',
   setTimeout(() => form.querySelector('input:not([type=hidden]),select,textarea')?.focus(), 30);
   return ov;
 }
-const fld = (label, name, { type = 'text', value = '', ph = '', opts, rows, step, hint, req } = {}) => `<div class="field"><label>${esc(label)}${req ? ' *' : ''}</label>${
-  opts ? `<select class="input white" name="${name}">${opts.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return `<option value="${esc(v)}" ${String(v) === String(value) ? 'selected' : ''}>${esc(l)}</option>`; }).join('')}</select>`
-  : rows ? `<textarea class="input white" name="${name}" rows="${rows}" placeholder="${esc(ph)}">${esc(value)}</textarea>`
-  : `<input class="input white" name="${name}" type="${type}" value="${esc(value)}" placeholder="${esc(ph)}" ${step ? `step="${step}"` : ''}>`}${hint ? `<div class="fhint">${hint}</div>` : ''}</div>`;
+const fld = (label, name, { type = 'text', value = '', ph = '', opts, rows, step, hint, req } = {}) => `<div class="field"><label>${esc(label)}${req ? ' <span class="req">*</span>' : ''}</label>${
+  opts ? `<select class="input" name="${name}">${opts.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return `<option value="${esc(v)}" ${String(v) === String(value) ? 'selected' : ''}>${esc(l)}</option>`; }).join('')}</select>`
+  : rows ? `<textarea class="input" name="${name}" rows="${rows}" placeholder="${esc(ph)}">${esc(value)}</textarea>`
+  : `<input class="input" name="${name}" type="${type}" value="${esc(value)}" placeholder="${esc(ph)}" ${step ? `step="${step}"` : ''}>`}${hint ? `<div class="fhint">${hint}</div>` : ''}</div>`;
 function reasonModal({ title, label, btn = 'Confirm', danger = true, ph = '', onSubmit, extra = '', optional = false }) {
   openModal({ title, submitLabel: btn, danger, html: `${extra}${fld(label, 'reason', { rows: 3, ph, req: !optional })}`, onSubmit: v => { if (!optional && !String(v.reason || '').trim()) { toast(`${label} is required`, 'err'); return false; } return onSubmit(v.reason.trim()); } });
 }
 function confirmBox({ title, message, confirmLabel = 'Confirm', danger = false, onConfirm }) {
-  openModal({ title, submitLabel: confirmLabel, danger, html: `<p style="margin:0;line-height:1.55;font-size:12px;color:#44444C">${message}</p>`, onSubmit: () => { onConfirm(); } });
+  openModal({ title, submitLabel: confirmLabel, danger, html: `<p>${message}</p>`, onSubmit: () => { onConfirm(); } });
 }
 function errorModal(title, errors) {
-  openModal({ title, hideFoot: false, submitLabel: '', cancelLabel: 'Close', html: `<div class="alert err" style="margin-top:0"><div><ul style="margin:0;padding-left:16px">${errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div></div>` });
+  openModal({ title, hideFoot: false, submitLabel: '', cancelLabel: 'Close', html: `<div class="alert err" style="margin-top:0"><div><ul style="margin:0;padding-left:18px">${errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div></div>` });
   document.querySelector('.overlay .modal-foot .btn-primary')?.remove();
 }
-function openDrawer(title, html, wide) {
+
+/* ---------- panels (right-hand drawers, like Create PO / GRN / Submit Invoice in DICE) ---------- */
+/* openPanel({ key, title, sub, wide, init?, body(), foot?, derive? })
+   body()/foot() are re-evaluated on every render, so a panel always shows live data. */
+function openPanel(p) {
   closeOverlays();
+  ui.f = p.init ? p.init() : null; ui.fKey = 'panel:' + p.key; ui.panel = p;
   const ov = document.createElement('div'); ov.className = 'drawer-ov';
-  const d = document.createElement('aside'); d.className = 'drawer' + (wide ? ' wide' : '');
-  d.innerHTML = `<div class="modal-head"><h3>${esc(title)}</h3><button class="kebab x" data-close>${icon('x', 14)}</button></div><div class="modal-body">${html}</div>`;
-  document.body.append(ov, d);
-  ov.onclick = closeOverlays; d.querySelector('[data-close]').onclick = closeOverlays;
+  const d = document.createElement('aside'); d.className = 'panel' + (p.wide ? ' wide' : p.mid ? ' mid' : '');
+  d.innerHTML = p.bare ? '<div class="panel-body"></div>' : `<div class="panel-head"><button class="x-btn" data-act="panel-close" title="Close">${icon('x', 22, 2)}</button><div><h2></h2><div class="sub"></div></div></div><div class="panel-body"></div><div class="panel-foot"></div>`;
+  document.body.append(ov, d); ov.onclick = closePanel;
+  redrawPanel();
 }
+function redrawPanel() {
+  const p = ui.panel, d = $('.panel'); if (!p || !d) return;
+  const body = d.querySelector('.panel-body'), sc = body.scrollTop, sc2 = [...body.querySelectorAll('.fm,.pv')].map(n => n.scrollTop);
+  const val = x => typeof x === 'function' ? x() : x;
+  let html;
+  try { html = p.body(); } catch (e) { console.error(e); html = `<div class="alert err"><div><div class="at">Panel error</div>${esc(e.message)}</div></div>`; }
+  if (!p.bare) { d.querySelector('h2').textContent = val(p.title) || ''; d.querySelector('.sub').innerHTML = val(p.sub) || ''; d.querySelector('.panel-foot').innerHTML = p.foot ? p.foot() : ''; }
+  body.innerHTML = html;
+  body.scrollTop = sc; [...body.querySelectorAll('.fm,.pv')].forEach((n, i) => { n.scrollTop = sc2[i] || 0; });
+  ui.derive = p.derive || null; if (ui.derive) ui.derive();
+}
+function closePanel() {
+  document.querySelectorAll('.drawer-ov,.panel').forEach(n => n.remove());
+  if (ui.panel && ui.fKey.startsWith('panel:')) { ui.f = null; ui.fKey = ''; }
+  ui.panel = null; ui.derive = null;
+}
+ACT['panel-close'] = () => closePanel();
+
 let menuEl = null, menuBtn = null;
 function closeMenu() { menuEl?.remove(); menuEl = null; menuBtn = null; }
 function openMenu(btn, items) {
   if (menuBtn === btn) return closeMenu(); closeMenu(); menuBtn = btn;
-  menuEl = document.createElement('div'); menuEl.className = 'menu menu-wide';
-  menuEl.innerHTML = items.map((it, i) => `<button data-i="${i}" class="${it.danger ? 'danger' : ''}">${it.icon ? icon(it.icon, 12) : ''}${esc(it.label)}</button>`).join('');
+  menuEl = document.createElement('div'); menuEl.className = 'menu';
+  menuEl.innerHTML = items.map((it, i) => `<button data-i="${i}" class="${it.danger ? 'danger' : ''}" ${it.disabled ? 'disabled' : ''}>${it.icon ? icon(it.icon, 15) : ''}${esc(it.label)}</button>`).join('');
   document.body.appendChild(menuEl);
   const r = btn.getBoundingClientRect(), w = menuEl.offsetWidth, h = menuEl.offsetHeight;
   let top = r.bottom + 4, left = r.right - w; if (top + h > innerHeight - 8) top = r.top - h - 4; if (left < 8) left = 8;
@@ -144,128 +167,162 @@ function openMenu(btn, items) {
 
 /* ---------- small renderers ---------- */
 const COLOR = {
-  Approved: 'green', Accepted: 'green', Paid: 'green', Certified: 'green', Eligible: 'green', Matched: 'green', Passed: 'green', Final: 'green', Active: 'green',
-  Posted: 'blue', Submitted: 'blue', 'Submitted for Acceptance': 'blue', 'Pending Matching': 'blue', 'Partially Passed': 'amber',
-  'Pending Approval': 'amber', 'Pending Inspection': 'amber', 'Pending Acceptance': 'amber', 'Partially Accepted': 'amber', 'More Info Requested': 'amber', 'Partially Matched': 'amber', 'Partially Invoiced': 'amber', Pending: 'amber', 'Awaiting payment': 'amber', Amendment: 'amber',
-  Draft: 'gray', Cancelled: 'gray', Closed: 'gray', 'Not Eligible': 'gray', 'Not started': 'gray', 'Not posted to AP': 'gray', 'n/a': 'gray', Released: 'gray',
+  Approved: 'green', Accepted: 'green', Paid: 'green', Certified: 'green', Eligible: 'green', Matched: 'green', Passed: 'green', Completed: 'green',
+  Posted: 'blue', Submitted: 'blue', 'Pending Matching': 'blue',
+  'Info Requested': 'amber', 'Pending Approval': 'amber', 'Pending Inspection': 'amber', 'Pending Acceptance': 'amber', 'Partially Accepted': 'amber', 'Partially Matched': 'amber', Pending: 'amber', 'Awaiting payment': 'amber',
+  Draft: 'gray', Cancelled: 'gray', Closed: 'gray', 'Not Eligible': 'gray', 'Not started': 'gray', 'Not posted to AP': 'gray',
   Rejected: 'red', 'Matching Failed': 'red', Blocked: 'red', Failed: 'red', Reversed: 'red', Invoiced: 'purple', Reserved: 'amber', Committed: 'green',
 };
 const sb = s => `<span class="badge-s s-${COLOR[s] || 'gray'}">${esc(s)}</span>`;
 const mb = m => `<span class="m-badge m-${String(m).toLowerCase()}">${esc(m)}</span>`;
-const poMethodBadge = po => mb(po.billingMethod) + (poCertified(po) ? ' <span class="badge-s s-gray" style="margin-left:2px">Certified</span>' : '');
-const link = (hash, label, cls = 'link') => `<a class="${cls}" href="${hash}" style="text-decoration:none">${esc(label)}</a>`;
+const typeBadge = po => `<span class="t-badge ${po.type === 'Services' ? 't-services' : ''}">${esc(po.type)}</span>`;
+const poMethodBadge = po => mb(po.billingMethod) + (poCertified(po) ? ' <span class="badge-s s-gray" style="margin-left:4px">Certified</span>' : '');
+const stagePill = po => { const s = poStage(po); return `<span class="pill ${s.tone === 'green' ? '' : s.tone}">${esc(s.short)}</span>`; };
+const link = (hash, label, cls = 'link') => `<a class="${cls}" href="${hash}">${esc(label)}</a>`;
 const poLink = po => link(`#/po/${po.id}`, po.number);
 const invLink = i => link(`#/invoice/${i.id}`, invRef(i));
-const actBtn = (act, label, { cls = 'btn-outline btn-sm', data = {}, icn, dis, title } = {}) => `<button class="btn ${cls}" data-act="${act}" ${Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ')} ${dis ? 'disabled' : ''} ${title ? `title="${esc(title)}"` : ''}>${icn ? icon(icn, 12) : ''}${esc(label)}</button>`;
+const actBtn = (act, label, { cls = 'btn-outline btn-sm', data = {}, icn, dis, title } = {}) => `<button class="btn ${cls}" data-act="${act}" ${Object.entries(data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ')} ${dis ? 'disabled' : ''} ${title ? `title="${esc(title)}"` : ''}>${icn ? icon(icn, 15) : ''}${esc(label)}</button>`;
 const gbtn = (perm, act, label, o = {}) => can(perm) ? actBtn(act, label, o) : actBtn(act, label, { ...o, dis: true, title: whyNot(perm) });
+const viewBtn = (hash, label = 'View') => `<button class="btn-view" data-act="go" data-hash="${hash}">${icon('open', 12, 2)}${label}</button>`;
 const emptyRow = (cols, msg) => `<tr><td colspan="${cols}" class="empty">${esc(msg)}</td></tr>`;
-const alertBox = (kind, title, body) => `<div class="alert ${kind}">${icon(kind === 'ok' ? 'check' : kind === 'info' ? 'info' : 'alert', 15)}<div>${title ? `<div class="at">${esc(title)}</div>` : ''}${body}</div></div>`;
+const alertBox = (kind, title, body) => `<div class="alert ${kind}">${icon(kind === 'ok' ? 'check' : kind === 'info' ? 'info' : 'alert', 18)}<div>${title ? `<div class="at">${esc(title)}</div>` : ''}${body}</div></div>`;
 const errList = errs => `<ul>${errs.map(e => `<li>${esc(typeof e === 'string' ? e : e.msg)}</li>`).join('')}</ul>`;
 const kv = (k, v) => `<div><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`;
 const strip = items => `<div class="strip">${items.map(([k, v, s, cls]) => `<div class="${cls || ''}"><div class="k">${esc(k)}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`).join('')}</div>`;
-const attachChips = (arr, path) => (arr || []).map((f, i) => `<span class="attach">${icon('clip', 11)}${esc(f)}${path ? `<button type="button" data-act="rm-attach" data-path="${path}" data-i="${i}" title="Remove">${icon('x', 10, 2.4)}</button>` : ''}</span>`).join('');
-const attachBox = (path, arr, label = 'Attach files') => `<div>${attachChips(arr, path)}<button type="button" class="btn btn-outline btn-sm" data-act="pick-file">${icon('plus', 11)}${label}</button><input type="file" multiple hidden data-attach="${path}"> <button type="button" class="btn btn-ghost btn-sm" data-act="add-sample" data-path="${path}">Add sample file</button></div>`;
+const noteBox = (cls, ic, html) => `<div class="note ${cls}"><div class="ic">${icon(ic, 15)}</div><div>${html}</div></div>`;
+const attachChips = (arr, path) => (arr || []).map((f, i) => `<span class="attach">${icon('clip', 13)}${esc(f)}${path ? `<button type="button" data-act="rm-attach" data-path="${path}" data-i="${i}" title="Remove">${icon('x', 12, 2.4)}</button>` : ''}</span>`).join('');
+const attachBox = (path, arr) => `<div class="dash-wrap">${attachChips(arr, path)}<button type="button" class="dash-add" data-act="pick-file" title="Attach a file">${icon('clip', 20)}</button><input type="file" multiple hidden data-attach="${path}"><button type="button" class="link" data-act="add-sample" data-path="${path}" style="font-size:12px">Add sample file</button></div>`;
 ACT['pick-file'] = el => el.nextElementSibling.click();
 ACT['rm-attach'] = el => { const arr = getPath(ui.f, el.dataset.path); arr.splice(+el.dataset.i, 1); render(); };
 ACT['add-sample'] = el => { const arr = getPath(ui.f, el.dataset.path) || []; arr.push(`sample-document-${arr.length + 1}.pdf`); setPath(ui.f, el.dataset.path, arr); render(); };
 const opt = (items, sel) => items.map(o => { const [v, l] = Array.isArray(o) ? o : [o, o]; return `<option value="${esc(v)}" ${String(v) === String(sel) ? 'selected' : ''}>${esc(l)}</option>`; }).join('');
-const supOpts = () => db.suppliers.map(s => [s.id, `${s.name} (${s.code})`]);
+const supOpts = () => db.suppliers.map(s => [s.id, s.name]);
+const officeOpts = () => OFFICES.map(o => [o.id, o.name]);
 
-function pageHead({ title, crumbs = [], right = '', sub = '' }) {
-  return `<div class="page-head">
-    <button class="back-btn" data-act="back" title="Back">${icon('back', 13, 2)}</button>
-    <div class="head-title"><h1 class="page-title">${esc(title)} ${sub}</h1>
-      <div class="crumbs"><a href="#/dashboard">DICE</a>${crumbs.map(([l, h]) => `/${h ? `<a href="${h}">${esc(l)}</a>` : `<span>${esc(l)}</span>`}`).join('')}</div></div>
-    <div class="head-right">${right}</div></div>`;
+/* form-field builders bound to ui.f */
+const fv = path => getPath(ui.f, path);
+const F = {
+  text: (label, path, o = {}) => `<div class="field ${o.cls || ''}"><label>${esc(label)}${o.req ? ' <span class="req">*</span>' : ''}</label><input class="input ${o.num ? 'num' : ''}" ${o.type ? `type="${o.type}"` : ''} ${o.step ? `step="${o.step}" min="0"` : ''} data-f="${path}" ${o.num ? 'data-t="num"' : ''} ${o.r ? 'data-r' : ''} value="${esc(fv(path) ?? '')}" placeholder="${esc(o.ph || '')}" ${o.dis ? 'disabled' : ''}>${o.hint ? `<div class="fhint">${o.hint}</div>` : ''}</div>`,
+  area: (label, path, o = {}) => `<div class="field ${o.cls || ''}"><label>${esc(label)}</label><textarea class="input" rows="${o.rows || 2}" data-f="${path}" placeholder="${esc(o.ph || '')}">${esc(fv(path) ?? '')}</textarea></div>`,
+  select: (label, path, options, o = {}) => `<div class="field ${o.cls || ''}"><label>${esc(label)}${o.req ? ' <span class="req">*</span>' : ''}</label><select class="input" data-f="${path}" ${o.r ? 'data-r' : ''} ${o.hook ? `data-hook="${o.hook}"` : ''} ${o.dis ? 'disabled' : ''}>${o.blank ? `<option value="">${esc(o.blank)}</option>` : ''}${opt(options, fv(path))}</select>${o.hint ? `<div class="fhint">${o.hint}</div>` : ''}</div>`,
+  ro: (label, html, o = {}) => `<div class="field ${o.cls || ''}"><label>${esc(label)}</label><div class="ro">${html}</div></div>`,
+};
+
+/* ---------- page header ---------- */
+function pageHead({ title, tags = '', right = '', back = true, crumb = '' }) {
+  return `<div class="ph">${back ? `<button class="back" data-act="back" title="Back">${icon('back', 18, 2)}</button>` : ''}<h1>${esc(title)}</h1><div class="tags">${tags}</div><div class="right">${right}</div></div>${crumb ? `<div class="crumb">${crumb}</div>` : ''}`;
 }
-ACT.back = () => history.length > 1 ? history.back() : go('#/dashboard');
-const tabsHtml = (tabs, cur, base) => `<div class="tabs scroll">${tabs.map(([k, l, n]) => `<button class="tab ${cur === k ? 'active' : ''}" data-act="tab" data-base="${base}" data-k="${k}">${esc(l)}${n != null ? `<span class="count">${n}</span>` : ''}</button>`).join('')}</div>`;
+ACT.back = () => history.length > 1 ? history.back() : go('#/pos');
+const tabsHtml = (tabs, cur, base) => `<div class="tabs">${tabs.map(([k, l, n]) => `<button class="tab ${cur === k ? 'active' : ''}" data-act="tab" data-base="${base}" data-k="${k}">${esc(l)}${n != null ? `<span class="n">${n}</span>` : ''}</button>`).join('')}</div>`;
 ACT.tab = el => go(`${el.dataset.base}?tab=${el.dataset.k}`);
 
-/* ---------- generic list (filters, search, pagination) ---------- */
+/* ---------- generic list (tabs, search, filters, pagination) ---------- */
 const LISTS = {};
 function listState(key, q, defaults) {
   const sig = JSON.stringify(q || {});
   if (!ui.lists[key] || ui.listSig[key] !== sig) { ui.lists[key] = { q: '', page: 1, ...defaults, ...(q || {}) }; ui.listSig[key] = sig; }
   return ui.lists[key];
 }
+const listRows = (key) => { const cfg = LISTS[key], st = ui.lists[key], tab = cfg.tabs && cfg.tabs.find(t => t[0] === st.tab); return cfg.rows().filter(r => (!tab || tab[2](r)) && cfg.match(r, st)); };
 function listHtml(key, cfg) {
-  LISTS[key] = cfg; const st = listState(key, ui.r.q, cfg.defaults);
-  const filt = (cfg.filters || []).filter(f => !(cfg.pills && cfg.pills.name === f.name)).map(f => {
-    const val = st[f.name] ?? '';
-    const o = f.options(); if (val && !o.some(x => String(Array.isArray(x) ? x[0] : x) === String(val))) o.push([val, val.replace(/,/g, ', ')]);
-    return `<select class="input" data-lf="${key}:${f.name}" title="${esc(f.label)}"><option value="">${esc(f.label)}: All</option>${opt(o, val)}</select>`;
-  }).join('');
-  const dates = cfg.dates ? `<input class="input" type="date" data-lf="${key}:from" value="${esc(st.from || '')}" title="From date"><input class="input" type="date" data-lf="${key}:to" value="${esc(st.to || '')}" title="To date">` : '';
-  const chips = (cfg.filters || []).filter(f => st[f.name]).map(f => `<span class="fchip">${esc(f.label)}: ${esc(String(st[f.name]).replace(/,/g, ', '))}<button data-act="lclear" data-key="${key}" data-name="${f.name}">${icon('x', 10, 2.4)}</button></span>`).join('');
-  return `<div class="filters"><div class="search">${icon('search', 12)}<input class="input" data-lq="${key}" placeholder="${esc(cfg.searchPh || 'Search…')}" value="${esc(st.q)}"></div>${filt}${dates}${chips}<span class="spacer"></span>${cfg.right || ''}</div>
-    ${cfg.pills ? pillsHtml(key, cfg, st) : ''}<div id="lb-${key}">${listBody(key)}</div>`;
+  LISTS[key] = cfg; const st = listState(key, ui.r.q, { tab: cfg.tabs ? cfg.tabs[0][0] : '', ...cfg.defaults });
+  const tabs = cfg.tabs ? `<div class="tabs">${cfg.tabs.map(([k, l, fn]) => `<button class="tab ${st.tab === k ? 'active' : ''}" data-act="ltab" data-key="${key}" data-k="${k}">${esc(l)}</button>`).join('')}</div>` : '';
+  const filt = (cfg.filters || []).map(f => `<select class="input sm" data-lf="${key}:${f.name}" title="${esc(f.label)}"><option value="">${esc(f.label)}: All</option>${opt(f.options(), st[f.name] ?? '')}</select>`).join('');
+  const dates = cfg.dates ? `<input type="date" class="input sm" style="width:150px" data-lf="${key}:from" value="${esc(st.from || '')}" title="From date"><input type="date" class="input sm" style="width:150px" data-lf="${key}:to" value="${esc(st.to || '')}" title="To date">` : '';
+  const active = st.q || (cfg.filters || []).some(f => st[f.name]) || st.from || st.to;
+  const open = st.showFilter || active;
+  const all = listRows(key);
+  return `${tabs}<div class="toolbar"><button class="tool ${open ? 'on' : ''}" data-act="lfilter" data-key="${key}">${icon('filter', 16)}<b>Filter</b></button><div class="tool count" id="lc-${key}">${all.length} ${esc(cfg.noun || 'records')}</div><div class="tool">${icon('list', 16)}List View</div><button class="tool" data-act="lcsv" data-key="${key}">${icon('download', 16)}Download Csv</button><button class="tool" data-act="stub" data-name="Upload Csv">${icon('upload', 16)}Upload Csv</button><button class="tool" data-act="stub" data-name="Manage Table View">${icon('gear', 16)}Manage Table View</button><span class="spacer"></span>${cfg.right || ''}</div>
+    ${open ? `<div class="filterbar"><div class="search">${icon('search', 15)}<input data-lq="${key}" placeholder="${esc(cfg.searchPh || 'Search…')}" value="${esc(st.q)}"></div>${filt}${dates}${active ? `<button class="btn btn-ghost btn-sm" data-act="lclear" data-key="${key}">Clear</button>` : ''}</div>` : ''}
+    ${cfg.above ? `<div class="subbar">${cfg.above}</div>` : '<div style="height:14px"></div>'}<div id="lb-${key}">${listBody(key)}</div>`;
 }
-function pillsHtml(key, cfg, st) {
-  const p = cfg.pills, base = cfg.rows().filter(r => cfg.match(r, { ...st, [p.name]: '' })), cnt = v => base.filter(r => p.get(r) === v).length;
-  return '<div class="pill-tabs">' + '<button class="' + (!st[p.name] ? 'on' : '') + '" data-act="lpill" data-key="' + key + '" data-name="' + p.name + '" data-v="">All<span class="n">' + base.length + '</span></button>'
-    + p.values.map(v => '<button class="' + (st[p.name] === v ? 'on' : '') + '" data-act="lpill" data-key="' + key + '" data-name="' + p.name + '" data-v="' + esc(v) + '">' + esc(v) + '<span class="n">' + cnt(v) + '</span></button>').join('') + '</div>';
-}
-ACT.lpill = el => { ui.lists[el.dataset.key][el.dataset.name] = el.dataset.v; ui.lists[el.dataset.key].page = 1; render(); };
+ACT.lfilter = el => { const st = ui.lists[el.dataset.key]; st.showFilter = !st.showFilter; if (!st.showFilter) { st.q = ''; (LISTS[el.dataset.key].filters || []).forEach(f => { st[f.name] = ''; }); st.from = st.to = ''; } render(); };
+ACT.lclear = el => { const st = ui.lists[el.dataset.key]; st.q = ''; (LISTS[el.dataset.key].filters || []).forEach(f => { st[f.name] = ''; }); st.from = st.to = ''; st.page = 1; render(); };
+ACT.lcsv = el => {
+  const cfg = LISTS[el.dataset.key], t = document.createElement('table'); t.innerHTML = `<tbody>${listRows(el.dataset.key).map(cfg.row).join('')}</tbody>`;
+  const q = v => `"${String(v).replace(/\s+/g, ' ').trim().replace(/"/g, '""')}"`, heads = cfg.cols.filter(c => c !== '').map(c => c.replace(/^>/, ''));
+  const rows = [...t.rows].map(tr => [...tr.cells].slice(0, heads.length).map(c => q(c.textContent)).join(','));
+  const url = URL.createObjectURL(new Blob([[heads.map(q).join(','), ...rows].join('\n')], { type: 'text/csv' }));
+  const a = document.createElement('a'); a.href = url; a.download = `${el.dataset.key}-${todayISO()}.csv`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 500);
+  toast(`Downloaded ${rows.length} row(s)`);
+};
+ACT.ltab = el => { const st = ui.lists[el.dataset.key]; st.tab = el.dataset.k; st.page = 1; render(); };
 function listBody(key) {
   const cfg = LISTS[key], st = ui.lists[key];
-  const all = cfg.rows().filter(r => cfg.match(r, st));
+  const all = listRows(key);
   const pages = Math.max(1, Math.ceil(all.length / PER_PAGE)); if (st.page > pages) st.page = pages;
   const start = (st.page - 1) * PER_PAGE, rows = all.slice(start, start + PER_PAGE);
   const nums = Array.from({ length: pages }, (_, i) => i + 1);
-  return `<div class="tbl-wrap"><table class="grid compact"><thead><tr>${cfg.cols.map(c => `<th class="${c.startsWith('>') ? 'right' : ''}">${esc(c.replace(/^>/, ''))}</th>`).join('')}</tr></thead>
+  const lc = document.getElementById('lc-' + key); if (lc) lc.textContent = `${all.length} ${cfg.noun || 'records'}`;
+  return `<div class="tbl-wrap"><table class="tbl"><thead><tr>${cfg.cols.map(c => `<th class="${c.startsWith('>') ? 'right' : ''}">${esc(c.replace(/^>/, ''))}</th>`).join('')}</tr></thead>
     <tbody>${rows.length ? rows.map(cfg.row).join('') : emptyRow(cfg.cols.length, cfg.empty || 'No records match the current filters.')}</tbody></table></div>
-    <div class="pager"><div class="pages"><button data-act="lpage" data-key="${key}" data-page="${st.page - 1}" ${st.page <= 1 ? 'disabled' : ''}>${icon('chevLeft', 11, 2)}</button>${nums.map(n => `<button class="${n === st.page ? 'active' : ''}" data-act="lpage" data-key="${key}" data-page="${n}">${n}</button>`).join('')}<button data-act="lpage" data-key="${key}" data-page="${st.page + 1}" ${st.page >= pages ? 'disabled' : ''}>${icon('chevRight', 11, 2)}</button></div>
-    <div class="info">${all.length ? `Showing ${start + 1}–${start + rows.length} of ${all.length}` : 'No items'}</div></div>`;
+    <div class="pager"><div class="info">${all.length ? `Showing ${start + 1}–${start + rows.length} of ${all.length}` : 'No items'}</div><div class="pages"><button data-act="lpage" data-key="${key}" data-page="${st.page - 1}" ${st.page <= 1 ? 'disabled' : ''}>${icon('chevLeft', 14, 2)}</button>${nums.map(n => `<button class="${n === st.page ? 'active' : ''}" data-act="lpage" data-key="${key}" data-page="${n}">${n}</button>`).join('')}<button data-act="lpage" data-key="${key}" data-page="${st.page + 1}" ${st.page >= pages ? 'disabled' : ''}>${icon('chevRight', 14, 2)}</button></div></div>`;
 }
 ACT.lpage = el => { ui.lists[el.dataset.key].page = +el.dataset.page; $('#lb-' + el.dataset.key).innerHTML = listBody(el.dataset.key); };
-ACT.lclear = el => { ui.lists[el.dataset.key][el.dataset.name] = ''; ui.lists[el.dataset.key].page = 1; render(); };
 const matchText = (st, ...vals) => !st.q || vals.join(' ').toLowerCase().includes(st.q.toLowerCase());
 const matchIn = (st, name, val) => !st[name] || String(st[name]).split(',').includes(String(val));
 const matchDate = (st, iso) => (!st.from || iso >= st.from) && (!st.to || iso <= st.to);
 
 /* ---------- sidebar ---------- */
+const S = (label, icon) => ({ label, icon, stub: true });   // DICE menu entries that are outside this billing prototype
 const NAV = [
-  { label: 'Dashboard', icon: 'gauge', hash: '#/dashboard', key: 'dashboard' },
-  { label: 'Purchase Orders', icon: 'doc', hash: '#/pos', key: 'pos', also: ['po'] },
-  { label: 'Goods Receipts (GRN)', icon: 'box', hash: '#/grns', key: 'grns', also: ['grn'] },
-  { label: 'Service Receipts (SRN)', icon: 'truck', hash: '#/srns', key: 'srns', also: ['srn'] },
-  { label: 'Supplier Invoices', icon: 'receipt', hash: '#/invoices', key: 'invoices', also: ['invoice'] },
-  { label: 'Invoice Matching', icon: 'checkSq', hash: '#/matching', key: 'matching' },
-  { label: 'Approvals', icon: 'flag', hash: '#/approvals', key: 'approvals', badge: true },
-  { label: 'Accounts Payable', icon: 'wallet', hash: '#/ap', key: 'ap' },
-  { label: 'Billing Schedules', icon: 'layers', key: 'schedules', group: true, also: ['milestones', 'milestone', 'claims', 'claim'], children: [['Overview', '#/schedules', 'schedules'], ['Milestones', '#/milestones', 'milestones'], ['Progress Claims', '#/claims', 'claims']] },
+  S('Card Expenses', 'receipt'), S('Accounting & GL', 'wallet'), S('Report & Audit', 'doc'),
+  { sec: 'Travel & Expenses' }, S('Expenses', 'receipt'), S('Advances', 'dollar'),
+  { sec: 'AP & Procurement' },
+  { label: 'Billing Overview', icon: 'grid', hash: '#/overview', key: 'overview' },
+  { label: 'Approvals', icon: 'checkSq', hash: '#/approvals', key: 'approvals', badge: true },
+  S('Vendor Management', 'user'), S('Product & Stock', 'dollar'), S('Stock & Transfer', 'dollar'),
+  { label: 'Invoice Management', icon: 'receipt', hash: '#/invoices', key: 'invoices', also: ['invoice'] },
+  S('Proforma Invoice', 'doc'),
+  { label: 'Procurement', icon: 'user', key: 'procurement', group: true, children: [['Purchase Request', null, 'pr', []], ['Request for Quotation', null, 'rfq', []], ['Purchase Order', '#/pos', 'pos', ['po']], ['Receipts (GRN / SRN)', '#/receipts', 'receipts', []], ['Vendor Catalog', null, 'vc', []]] },
+  S('Contract Management', 'doc'), S('Vendor Advance', 'dollar'), S('ASN', 'dollar'), S('Credit Note', 'wallet'), S('Debit Note', 'wallet'),
+  { sec: 'Treasury & Finances' }, S('Expense Vouchers', 'wallet'),
+  { label: 'Account Payables', icon: 'wallet', hash: '#/ap', key: 'ap' },
+  S('Taxation Approval', 'wallet'), S('GSTHOLD Payments', 'wallet'), S('Invoice Discounting', 'wallet'), S('Travel Bookings', 'truck'), S('Booking Requisition', 'doc'), S('Employee Settlements', 'user'), S('Vendor Settlements', 'wallet'),
 ];
 const approvalCount = () => db.invoices.filter(i => i.status === 'Pending Approval').length + db.pos.filter(p => p.status === 'Pending Approval').length
-  + db.grns.filter(g => ['Submitted', 'Pending Inspection'].includes(g.status)).length + db.srns.filter(s => s.status === 'Pending Acceptance').length
-  + db.milestones.filter(m => m.status === 'Submitted for Acceptance').length + db.claims.filter(c => c.status === 'Submitted').length;
+  + db.grns.filter(g => g.status === 'Pending Inspection').length + db.srns.filter(s => s.status === 'Pending Acceptance').length
+  + db.milestones.filter(m => m.status === 'Pending Approval').length + db.claims.filter(c => c.status === 'Submitted').length;
 function renderSidebar() {
-  const root = ui.r.parts[0] || 'dashboard';
+  const root = ui.r.parts[0] || 'pos';
+  document.querySelector('.app').classList.toggle('sb-collapsed', !!ui.sbCollapsed);
   $('#sidebar').innerHTML = `
-    <div class="brand"><div class="brand-logo">D</div><div class="brand-name">DICE Manufacturing LLC</div><div class="brand-mail">Procure-to-Pay · Billing prototype</div></div>
-    <div class="role-box"><label>Acting as</label><select data-role>${Object.entries(ROLES).map(([k, r]) => `<option value="${k}" ${db.meta.role === k ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}</select></div>
-    <div class="nav-section">Billing &amp; Procurement</div>
+    <button class="sb-toggle" data-act="sb-toggle" title="${ui.sbCollapsed ? 'Expand' : 'Collapse'} menu">${icon(ui.sbCollapsed ? 'chevRight' : 'chevLeft', 15, 2)}</button>
+    <div class="brand"><div class="brand-logo">D</div><div class="bt"><div class="brand-name">dice</div><div class="brand-sub">Procure-to-Pay · Billing prototype</div></div></div>
     ${NAV.map(n => {
-      const active = root === n.key || (n.also || []).includes(root);
-      if (n.group) return `<div class="nav-group ${active ? 'open active' : ''}"><div class="nav-item" data-act="go" data-hash="#/schedules">${icon(n.icon)}<span>${n.label}</span><span class="chev">${icon(active ? 'chevUp' : 'chevDown', 11, 2)}</span></div>
-        ${active ? `<div class="nav-sub">${n.children.map(([l, h, k]) => `<div class="nav-item ${root === k || (k === 'milestones' && root === 'milestone') || (k === 'claims' && root === 'claim') ? 'active' : ''}" data-act="go" data-hash="${h}">${l}</div>`).join('')}</div>` : ''}</div>`;
-      const cnt = n.badge ? approvalCount() : 0;
-      return `<div class="nav-item ${active ? 'active' : ''}" data-act="go" data-hash="${n.hash}">${icon(n.icon)}<span>${n.label}</span>${cnt ? `<span class="nbadge">${cnt}</span>` : ''}</div>`;
+      if (n.sec) return `<div class="nav-section">${n.sec}</div>`;
+      if (n.stub) return `<div class="nav-item stub" data-act="stub" data-name="${esc(n.label)}">${icon(n.icon, 20, 1.5)}<span>${esc(n.label)}</span></div>`;
+      if (n.group) { const open = n.children.some(c => c[1] && (root === c[2] || c[3].includes(root)));
+        return `<div class="nav-group ${open ? 'open' : ''}"><div class="nav-item" data-act="go" data-hash="#/pos">${icon(n.icon, 20, 1.5)}<span>${n.label}</span><span class="chev">${icon(open ? 'chevUp' : 'chevDown', 14, 2)}</span></div>
+          ${open ? `<div class="nav-sub">${n.children.map(([l, h, k, also]) => h ? `<div class="nav-item ${root === k || also.includes(root) ? 'active' : ''}" data-act="go" data-hash="${h}">${l}</div>` : `<div class="nav-item stub" data-act="stub" data-name="${l}">${l}</div>`).join('')}</div>` : ''}</div>`; }
+      const active = root === n.key || (n.also || []).includes(root), cnt = n.badge ? approvalCount() : 0;
+      return `<div class="nav-item ${active ? 'active' : ''}" data-act="go" data-hash="${n.hash}">${icon(n.icon, 20, 1.5)}<span>${n.label}</span>${cnt ? `<span class="nbadge">${cnt}</span>` : ''}</div>`;
     }).join('')}
-    <div class="nav-section">Demo</div>
-    <div class="nav-item" data-act="demo-open">${icon('play')}<span>Scenarios &amp; reset</span></div>
-    <div class="demo-note">Prototype data is stored in this browser. Posting, payment and notifications are simulated — no ERP, bank or e-mail is contacted.</div>`;
+    <div class="demo-box"><label>Acting as</label><select data-role>${Object.entries(ROLES).map(([k, r]) => `<option value="${k}" ${db.meta.role === k ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}</select>
+      <div class="nav-item" data-act="demo-open">${icon('reset', 17)}<span>Scenarios &amp; reset</span></div>
+      <div class="demo-note">Prototype data is kept in this browser. Posting and payment are simulated.</div></div>`;
 }
+ACT['sb-toggle'] = () => { ui.sbCollapsed = !ui.sbCollapsed; renderSidebar(); };
+ACT.stub = el => toast(`${el.dataset.name} is part of the wider DICE portal — not included in this billing prototype`);
 ACT.go = el => go(el.dataset.hash);
 
 /* ---------- demo / scenarios ---------- */
 const SCENARIOS = [
-  ['default', 'Seeded demo (recommended start)', 'PO-2026-1042 is Approved with Progressive billing and GRN-001/002/003 already accepted (77 of 100 units eligible). PO-2026-1043 carries the approved M1/M2/M3 milestone schedule, PO-2026-1044 is the Standard-billing regression PO, PO-2026-1051/1052 are the service (SRN) POs and PO-2026-1060 uses certified work progress.'],
-  ['A', 'Scenario A — start from a draft PO-2026-1042', 'PO-2026-1042 is a Draft with no receipts. Set Billing Method to Progressive, approve it, create GRN-001/002/003, then invoice 30 units of GRN-001 and 20 units of GRN-002, and try to re-invoice GRN-001.'],
-  ['B', 'Scenario B — milestone billing from a draft PO-2026-1042', 'PO-2026-1042 is a Draft using Milestone billing with M1 20% / M2 50% / M3 30% pre-populated. Finalize and approve the schedule, submit &amp; approve M1, invoice AED 20,000 and attempt a second invoice against M1.'],
+  ['default', 'Seeded demo (recommended)', 'Goods and Services POs across all three billing methods: PO 42 progressive with three GRNs, PO 43 a Goods milestone PO gated on a GRN, PO 44 standard billing, PO 51 services (SRN-based), PO 52 a Services milestone PO gated on an SRN, and PO 60 certified work progress.'],
+  ['A', 'Scenario A — progressive billing from scratch', 'PO 42 is a Draft with no receipts. Switch its billing method to Progressive, submit and approve it, create three GRNs, then invoice 30 units of GRN-001 and 20 units of GRN-002 and try to re-invoice GRN-001.'],
+  ['B', 'Scenario B — Goods milestone billing from scratch', 'PO 42 is a Goods PO Draft with an M1 20% / M2 50% / M3 30% schedule where M2 (Equipment Delivered) needs an accepted GRN. Submit and approve the PO, complete M1 and invoice it, then see M2 stay blocked until its GRN is accepted.'],
 ];
 ACT['demo-open'] = () => openModal({ title: 'Demo data & scenarios', cls: 'wide', hideFoot: true, html: `
-  <p class="hint" style="margin-top:0">Choose a starting point. This replaces all data stored in this browser for the prototype.</p>
-  ${SCENARIOS.map(([k, t, d]) => `<div class="scn"><div class="t">${t}</div><div class="d">${d}</div><button class="btn btn-primary btn-sm" data-act="demo-load" data-k="${k}">${icon('reset', 12)}${k === 'default' ? 'Reset Demo Data' : 'Load this scenario'}</button></div>`).join('')}
-  <div class="scn"><div class="t">Scenario C & D</div><div class="d">C — use PO-2026-1044 (Standard): invoice the accepted GRN-001 (AED 24,000). D — PO-2026-1051 (service progressive, SRN-001 accepted AED 25,000) and PO-2026-1052 (milestone service PO: M1 approved but its SRN is still pending → invoice blocked until the SRN is accepted). Both are included in the seeded demo.</div></div>`});
+  <p style="margin-bottom:14px">Choose a starting point. This replaces all data stored in this browser for the prototype.</p>
+  ${SCENARIOS.map(([k, t, d]) => `<div class="scn"><div class="t">${t}</div><div class="d">${d}</div><button class="btn btn-primary btn-sm" data-act="demo-load" data-k="${k}">${icon('reset', 14)}${k === 'default' ? 'Reset demo data' : 'Load this scenario'}</button></div>`).join('')}`});
 ACT['demo-load'] = el => { closeOverlays(); seedDb(el.dataset.k); toast(el.dataset.k === 'default' ? 'Demo data reset to the seeded scenarios' : `Scenario ${el.dataset.k} loaded`); go('#/pos'); render(); };
+
+/* when the current "Acting as" role cannot do the next step, say so and offer a one-click switch */
+const rolesFor = perm => (PERM[perm] || []);
+function roleBanner(perm, what) {
+  if (can(perm)) return '';
+  const r = rolesFor(perm)[0]; if (!r) return '';
+  const names = rolesFor(perm).map(k => ROLES[k].name).join(' or ');
+  return `<div class="alert warn" style="align-items:center"><div style="flex:1"><b>You are acting as ${esc(actor())}.</b> ${esc(what)} needs <b>${esc(names)}</b>.</div><button class="btn btn-outline btn-xs" data-act="role-switch" data-role="${r}">Switch to ${esc(ROLES[r].name)}</button></div>`;
+}
+ACT['role-switch'] = el => { db.meta.role = el.dataset.role; save(); toast(`Now acting as ${actor()}`); render(); };

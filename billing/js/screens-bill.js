@@ -1,152 +1,137 @@
 /* =====================================================================
-   screens-bill.js — milestones, progress claims, billing schedules overview
+   screens-bill.js — the PO "Billing" tab: milestones, certified progress claims,
+   receipt-based allocation, and their drawers
    ===================================================================== */
+const allocRefLabel = a => a.kind === 'grn' ? getGRN(a.refId)?.number : a.kind === 'srn' ? getSRN(a.refId)?.number : a.kind === 'milestone' ? getMS(a.refId) && msFull(getMS(a.refId)) : getClaim(a.refId)?.number;
+const gateCell = (m, po) => { const g = msGate(m, po); return !m.needsReceipt ? '<span class="dim-note">Not required</span>' : g.rec ? `<span class="strong">${esc(g.rec.number)}</span> ${sb(g.rec.reversed ? 'Reversed' : g.rec.status)}` : `<span class="warn-t">${g.label} required · none linked</span>`; };
 
-/* ================================================================ Milestones */
-ROUTES.milestones = () => `<div>${pageHead({ title: 'Milestones', crumbs: [['Billing Schedules', '#/schedules'], ['Milestones']], right: gbtn('po.edit', 'go', 'New PO with milestone billing', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/po/new?method=Milestone' } }) })}
-  <div class="content">${listHtml('milestones', {
-    pills: { name: 'status', values: ["Pending Acceptance","Submitted for Acceptance","More Info Requested","Approved","Rejected"], get: m => m.status },
-    searchPh: 'Search milestone, PO…',
-    filters: [{ name: 'status', label: 'Acceptance', options: () => ['Pending Acceptance', 'Submitted for Acceptance', 'More Info Requested', 'Approved', 'Rejected'] }, { name: 'billing', label: 'Billing', options: () => ['Not Eligible', 'Eligible', 'Invoiced'] }, { name: 'po', label: 'PO', options: () => db.pos.filter(p => p.billingMethod === 'Milestone').map(p => [p.id, p.number]) }],
-    rows: () => db.milestones.filter(m => m.status !== 'Draft').sort((a, b) => getPO(a.poId).number.localeCompare(getPO(b.poId).number) || a.seq - b.seq),
-    match: (m, st) => { const po = getPO(m.poId); return matchText(st, m.code, m.name, po.number) && matchIn(st, 'status', m.status) && matchIn(st, 'po', m.poId) && matchIn(st, 'billing', msBilling(m, po)); },
-    cols: ['PO', 'ID', 'Milestone', '>Amount', 'Planned', 'Acceptance', 'SRN gate', 'Billing', '>Invoiced', '>Remaining'],
-    row: m => { const po = getPO(m.poId), u = usage('milestone', m.id), g = msGate(m, po), sr = g.srn; return `<tr class="click" data-act="go" data-hash="#/milestone/${m.id}"><td>${esc(po.number)}</td><td class="strong">${m.code}</td><td>${esc(m.name)}</td><td class="num">${fmtNum(m.amount)}</td><td class="nowrap">${fmtD(m.planned)}</td><td>${sb(m.status)}</td><td>${m.srnRequired ? (sr ? `${esc(sr.number)} ${sb(sr.status)}` : '<span class="warn-t">Required — none</span>') : '<span class="dim-note">Not required</span>'}</td><td>${sb(msBilling(m, po))}</td><td class="num">${fmtNum(u.value)}</td><td class="num strong">${fmtNum(r2(m.amount - u.value))}</td></tr>`; },
-  })}</div></div>`;
+/* ================================================================ receipt-based allocation (Standard / Progressive) */
+function receiptEntitlementTable(po, s, progressive) {
+  const items = s.items, alloc = [], g = isGoods(po);
+  invsOf(po).filter(isLive).forEach(i => i.allocs.forEach(a => alloc.push({ i, a })));
+  return `<div class="sec" style="margin-top:22px">${progressive ? `${recName(po)} allocation` : `Accepted ${recName(po)}s`}<span class="sub">${progressive ? `${recName(po)} value consumed by invoices (live = in approval, approved, posted or paid)` : 'Standard billing matches invoices against the accepted total at PO level'}</span><span class="spacer"></span>${po.status === 'Approved' ? gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary', data: { po: po.id }, icn: 'plus' }) : ''}</div>
+  <div class="tbl-wrap"><table class="tbl sm"><thead><tr><th>${recName(po)}</th>${g ? '<th class="right">Delivered</th><th class="right">Accepted</th>' : ''}<th class="right">Accepted value</th><th class="right">Invoiced · approved</th><th class="right">Invoiced · in approval</th>${g ? '<th class="right">Available qty</th>' : ''}<th class="right">Available value</th><th>Status</th></tr></thead><tbody>
+  ${items.map(x => `<tr class="${x.eligible ? '' : 'dim'}"><td class="strong"><a class="link" data-act="rc-open" data-kind="${x.kind}" data-id="${x.refId}" href="javascript:void 0">${x.label}</a><div class="sub">${fmtD(x.ref.date)}</div></td>${g ? `<td class="num">${fmtNum(x.ref.received)}</td><td class="num">${fmtNum(x.entQty)}</td>` : ''}<td class="num">${fmtNum(x.entValue)}</td>
+    <td class="num">${g ? `${fmtNum(x.committedQty)} u / ` : ''}${fmtNum(x.committedValue)}</td><td class="num">${g ? `${fmtNum(x.reservedQty)} u / ` : ''}${fmtNum(x.reservedValue)}</td>${g ? `<td class="num">${fmtNum(x.availQty)}</td>` : ''}<td class="num strong">${fmtNum(x.availValue)}</td><td>${sb(x.status)}${!x.eligible && x.reason ? `<div class="sub">${esc(x.reason)}</div>` : ''}</td></tr>`).join('') || emptyRow(g ? 9 : 7, `No ${recName(po)}s yet — receipts are created from the ${recName(po)} tab.`)}
+  <tr class="total"><td>Total</td>${g ? `<td class="num">${fmtNum(sum(items, x => x.ref.received))}</td><td class="num">${fmtNum(sum(items, x => x.entQty || 0))}</td>` : ''}<td class="num">${fmtNum(s.accepted)}</td><td class="num">${fmtNum(sum(items, x => x.committedValue))}</td><td class="num">${fmtNum(sum(items, x => x.reservedValue))}</td>${g ? `<td class="num">${fmtNum(sum(items, x => x.availQty || 0))}</td>` : ''}<td class="num">${fmtNum(s.remaining)}</td><td></td></tr></tbody></table></div>
+  ${progressive ? `<div class="sec">Allocations by invoice</div><div class="tbl-wrap"><table class="tbl sm"><thead><tr><th>Invoice</th><th>Bill No.</th><th>${recName(po)}</th>${g ? '<th class="right">Qty</th>' : ''}<th class="right">Value</th><th>Invoice status</th><th>Allocation</th></tr></thead><tbody>${alloc.map(({ i, a }) => `<tr><td>${invLink(i)}</td><td>${esc(i.number)}</td><td>${esc(allocRefLabel(a))}</td>${g ? `<td class="num">${a.qty != null ? fmtNum(a.qty) : '—'}</td>` : ''}<td class="num">${fmtNum(a.value)}</td><td>${sb(i.status)}</td><td>${sb(APPROVED.includes(i.status) ? 'Committed' : 'Reserved')}</td></tr>`).join('') || emptyRow(g ? 7 : 6, 'No invoice has used a receipt yet.')}</tbody></table></div>` : ''}`;
+}
 
-ROUTES.milestone = r => {
-  const m = getMS(r.parts[1]); if (!m) return notFound('Milestone');
-  const po = getPO(m.poId), u = usage('milestone', m.id), g = msGate(m, po), bill = msBilling(m, po), ent = msEnt(m, po), srn = m.srnId && getSRN(m.srnId);
-  if (!ui.f || ui.fKey !== 'ms-' + m.id) { ui.f = { actualDate: m.actualDate || todayISO(), remarks: m.remarks || '', evidence: [...(m.evidence || [])] }; ui.fKey = 'ms-' + m.id; }
-  const f = ui.f, canSubmit = ['Pending Acceptance', 'More Info Requested', 'Rejected'].includes(m.status), underReview = m.status === 'Submitted for Acceptance';
-  const banner = { 'Pending Acceptance': ['amber', 'Pending acceptance', 'Eligible invoice amount: AED 0. The supplier must submit completion evidence and the approver must accept the milestone.'], 'Submitted for Acceptance': ['blue', 'Submitted — awaiting approval', 'Eligible invoice amount: AED 0 until the milestone is approved.'], 'More Info Requested': ['amber', 'More information requested', m.infoRequest], Rejected: ['red', 'Rejected', m.rejectReason], Approved: ent > 0 ? ['green', bill === 'Invoiced' ? 'Approved and invoiced' : 'Approved — invoice-eligible', bill === 'Invoiced' ? 'The full milestone amount is allocated to an invoice; a second invoice is blocked.' : `${money(ent)} can now be invoiced.`] : ['amber', 'Approved — not yet invoice-eligible', `Waiting for: ${g.reason}.`], Draft: ['gray', 'Draft schedule', 'The PO is not approved yet.'] }[m.status];
-  const checklist = [
-    [m.status === 'Approved', 'Milestone accepted by approver', m.status === 'Approved' ? `Approved ${fmtDT(m.approvedAt)}` : `Status: ${m.status}`],
-    [!m.srnRequired || g.ok, 'Required SRN acceptance', m.srnRequired ? (g.ok ? `${srn.number} accepted` : esc(g.reason)) : 'Not required for this milestone — no SRN is invented'],
-    [u.value < m.amount - EPS, 'Unallocated balance remains', u.value >= m.amount - EPS ? `Fully invoiced on ${u.invs.map(invRef).join(', ')}` : `${money(r2(m.amount - u.value))} unallocated`],
-    [po.status === 'Approved', 'PO approved & schedule locked', `${po.number} is ${po.status}`],
+/* ================================================================ milestones */
+function milestoneTable(po, s) {
+  const ms = msOf(po), tot = sum(ms, m => m.amount), appr = sum(ms, m => msEnt(m, po)), inv = sum(ms, m => usage('milestone', m.id).value);
+  return `<div class="sec" style="margin-top:22px">Milestone schedule<span class="sub">Open a milestone to complete, approve, link its ${recName(po)} or invoice it</span><span class="spacer"></span>${po.status === 'Draft' ? gbtn('po.edit', 'po-edit', 'Edit schedule', { data: { id: po.id }, icn: 'edit', cls: 'btn-primary' }) : ''}${po.status === 'Approved' ? gbtn('po.amend', 'po-amend', 'Amend schedule', { data: { id: po.id }, icn: 'edit' }) : ''}</div>
+  ${strip([['Schedule total', money(tot), `${fmtNum(sum(ms, m => m.pct))}% of PO`], ['Approved & cleared', money(appr), 'invoice-eligible'], ['Invoiced', money(inv)], ['Ready to invoice', money(s.remaining), 'approved − invoiced', 'hl']])}
+  <div class="tbl-wrap" style="margin-top:16px"><table class="tbl"><thead><tr><th>ID</th><th>Milestone</th><th class="right">%</th><th class="right">Amount</th><th>Completion</th><th>${recName(po)} gate</th><th class="right">Invoiced</th><th>Billing</th><th></th></tr></thead><tbody>
+  ${ms.map(m => { const u = usage('milestone', m.id), bill = msBilling(m, po);
+    return `<tr class="click" data-act="ms-open" data-id="${m.id}"><td class="strong">${m.code}</td><td class="strong">${esc(m.name)}<div class="sub" style="font-weight:400">Due ${fmtD(m.planned)}</div></td><td class="num">${fmtNum(m.pct)}%</td><td class="num strong">${fmtNum(m.amount)}</td><td>${sb(m.status)}</td><td>${gateCell(m, po)}</td><td class="num">${u.value ? fmtNum(u.value) : '—'}${u.invs.length ? `<div class="sub">${u.invs.map(invRef).join(', ')}</div>` : ''}</td><td>${sb(bill)}</td><td class="act" data-stop>${msRowAction(m, po)}<button class="btn-view" data-act="ms-open" data-id="${m.id}">${icon('open', 12, 2)}View</button></td></tr>`; }).join('') || emptyRow(9, 'No milestones.')}
+  <tr class="total"><td colspan="2">Total</td><td class="num">${fmtNum(sum(ms, m => m.pct))}%</td><td class="num">${fmtNum(tot)}</td><td colspan="2"></td><td class="num">${fmtNum(inv)}</td><td colspan="2"></td></tr></tbody></table></div>
+  <p class="hint" style="margin-top:10px">${icon('lock', 12)} The schedule is fixed once the PO is approved. Changes need an amendment; invoiced milestones are never rewritten. A passed due date never makes a milestone billable.</p>`;
+}
+/* the one next action for a milestone, shown right on its schedule row */
+function msRowAction(m, po) {
+  const g = msGate(m, po), ent = msEnt(m, po), u = usage('milestone', m.id);
+  if (['Pending Approval', 'Rejected'].includes(m.status)) return (can('ms.decide') ? gbtn('ms.decide', 'ms-approve', 'Approve', { cls: 'btn-primary btn-xs', data: { id: m.id }, icn: 'check' }) : actBtn('role-switch', 'Switch role to approve', { cls: 'btn-primary btn-xs', data: { role: rolesFor('ms.decide')[0] } })) + ' ';
+  if (m.status === 'Approved') return g.ok ? gbtn('ms.submit', 'ms-open', 'Mark complete', { cls: 'btn-primary btn-xs', data: { id: m.id }, icn: 'check' }) + ' ' : actBtn('ms-open', `Needs ${g.label}`, { cls: 'btn-outline btn-xs', data: { id: m.id }, title: g.reason }) + ' ';
+  if (ent - u.value > EPS) return gbtn('inv.create', 'inv-new', 'Invoice', { cls: 'btn-primary btn-xs', data: { po: po.id, ms: m.id } }) + ' ';
+  return '';
+}
+ACT['ms-open'] = el => openMilestonePanel(el.dataset.id);
+function openMilestonePanel(id) {
+  const get = () => getMS(id), m0 = get();
+  openPanel({ key: 'ms-' + id, mid: true, title: () => `${get().code} — ${get().name}`, sub: () => 'All milestone details',
+    init: () => ({ actualDate: m0.actualDate || todayISO(), remarks: m0.remarks || '', evidence: [...(m0.evidence || [])] }),
+    body: () => msPanelBody(get()), foot: () => msPanelFoot(get()) });
+}
+function msPanelBody(m) {
+  const po = getPO(m.poId), u = usage('milestone', m.id), g = msGate(m, po), bill = msBilling(m, po), ent = msEnt(m, po), rec = g.rec, f = ui.f, L = recName(po);
+  const banner = {
+    Draft: ['gray', 'Draft schedule', 'The PO is not approved yet — milestones are approved once the PO is.'],
+    'Pending Approval': ['amber', 'Step 1 · Waiting for approval', 'The approver reviews this milestone first, like the PO. Only then can it be worked on.'],
+    Rejected: ['red', 'Rejected', m.rejectReason || ''],
+    Approved: g.ok ? ['green', 'Step 3 · Ready to mark complete', 'Approved and all checks are clear. Mark it complete when the work is done — that makes it billable.'] : ['amber', `Step 2 · Waiting for the ${L}`, `Approved. Marking it complete is locked until the required ${L} is accepted — ${g.reason}.`],
+    Completed: ent > 0 ? ['green', bill === 'Invoiced' ? 'Completed and invoiced' : 'Completed — ready to invoice', bill === 'Invoiced' ? 'The full milestone amount is on an invoice; a second invoice is blocked.' : `${money(ent)} is invoice-eligible and counted in the PO's accepted value.`] : ['amber', 'Completed — not billable', `Cannot be invoiced: ${g.reason}.`],
+  }[m.status];
+  const check = [
+    [['Approved', 'Completed'].includes(m.status), 'Milestone approved', m.approvedAt ? `Approved ${fmtDT(m.approvedAt)}${m.approvedBy ? ' by ' + esc(m.approvedBy) : ''}` : `Status: ${m.status}`],
+    [g.ok, g.required ? `Accepted ${L} linked` : `No ${L} required`, g.required ? (g.ok ? `${rec.number} is Accepted` : esc(g.reason)) : 'This milestone is not gated on a receipt.'],
+    [m.status === 'Completed', 'Marked complete', m.status === 'Completed' ? `Completed ${fmtD(m.actualDate)}` : 'Done by the project owner / vendor once approved and the checks are clear'],
+    [u.value < m.amount - EPS, 'Not yet invoiced', u.value >= m.amount - EPS ? `Invoiced on ${u.invs.map(invRef).join(', ')}` : `${money(r2(m.amount - u.value))} still to invoice`],
   ];
-  const acts = [];
-  if (ent - u.value > EPS) acts.push(gbtn('inv.create', 'go', 'Create invoice for this milestone', { cls: 'btn-primary', icn: 'receipt', data: { hash: `#/invoice/new?po=${po.id}&ms=${m.id}` } }));
-  return `<div>${pageHead({ title: `${m.code} — ${m.name}`, sub: sb(m.status), crumbs: [['Billing Schedules', '#/schedules'], ['Milestones', '#/milestones'], [po.number, `#/po/${po.id}?tab=billing`], [m.code]], right: acts.join('') })}
-  <div class="content">${lifecycle(m, po, g, bill)}<div class="status-banner ${banner[0]}"><div><div class="t">${banner[1]}</div><div class="d">${esc(banner[2] || '')}</div></div></div>
-  ${strip([['Milestone amount', money(m.amount), `${fmtNum(m.pct)}% of PO`], ['Acceptance', sb(m.status)], ['Eligible invoice amount', money(Math.max(0, r2(ent - u.value))), ent > 0 ? 'approved & gates cleared' : 'not yet eligible', ent - u.value > EPS ? 'hl' : ''], ['Invoiced', money(u.value), u.invs.map(invRef).join(', ')], ['Remaining milestone balance', money(r2(m.amount - u.value))]])}
-  <div class="grid-2" style="margin-top:16px;align-items:start">
-   <div>
-    <div class="card flat"><h3>Milestone record</h3><div class="kvg" style="grid-template-columns:1fr 1fr">${kv('Milestone ID', `${esc(po.number)} / ${m.code}`)}${kv('PO & line', `${poLink(po)} · line ${lineOf(po, m.lineId).no}`)}${kv('Planned completion', fmtD(m.planned))}${kv('Actual completion', fmtD(m.actualDate))}${kv('Approver', esc(m.approver))}${kv('Approval timestamp', m.approvedAt ? fmtDT(m.approvedAt) : '—')}${kv('Description', esc(m.description) || '—')}${kv('Acceptance criteria', esc(m.criteria) || '—')}${kv('Required evidence', esc(m.evidenceReq) || '—')}${kv("Supplier's completion remarks", esc(m.remarks) || '—')}${kv('Evidence submitted', attachChips(m.evidence) || '—')}${m.rejectReason ? kv('Rejection reason', `<span class="bad-t">${esc(m.rejectReason)}</span>`) : ''}${kv('Linked SRN', srn ? `<a class="link" href="#/srn/${srn.id}">${esc(srn.number)}</a> ${sb(srn.status)}` : (m.srnRequired ? '<span class="warn-t">Required — not linked</span>' : 'Not required'))}</div></div>
-    ${canSubmit ? `<div class="card" style="margin-top:12px"><h3>Supplier completion submission</h3>${m.status === 'More Info Requested' ? alertBox('warn', 'Information requested', esc(m.infoRequest)) : ''}${m.status === 'Rejected' ? alertBox('err', 'Previously rejected', esc(m.rejectReason)) : ''}<div class="fgrid c2"><div class="field"><label>Actual completion date *</label><input class="input" type="date" data-f="actualDate" value="${esc(f.actualDate)}"></div><div class="field"><label>Required evidence</label><div class="ro">${esc(m.evidenceReq) || '—'}</div></div><div class="field span2"><label>Completion remarks *</label><textarea class="input" rows="2" data-f="remarks">${esc(f.remarks)}</textarea></div><div class="field span2"><label>Supporting evidence *</label>${attachBox('evidence', f.evidence, 'Attach evidence')}</div></div>
-      <div class="form-actions" style="margin-top:12px">${gbtn('ms.submit', 'ms-submit-page', 'Mark as Submitted for Acceptance', { cls: 'btn-primary', data: { id: m.id }, icn: 'check' })}</div></div>` : ''}
-    ${underReview ? `<div class="card" style="margin-top:12px"><h3>Approver decision</h3><p class="hint" style="margin-top:0">Review the evidence submitted by the supplier. Approval alone does not create or approve an SRN.</p><div class="row">${gbtn('ms.decide', 'ms-approve', 'Approve Milestone', { cls: 'btn-primary', data: { id: m.id }, icn: 'check' })}${gbtn('ms.decide', 'ms-info', 'Request More Information', { data: { id: m.id } })}${gbtn('ms.decide', 'ms-reject', 'Reject Milestone', { cls: 'btn-danger-soft', data: { id: m.id } })}</div></div>` : ''}
-   </div>
-   <div>
-    <div class="card flat"><h3>Invoice eligibility</h3><div class="checks">${checklist.map(([ok, t, d]) => `<div class="check ${ok ? 'pass' : 'fail'}" style="grid-template-columns:22px 1fr"><div class="ci">${icon(ok ? 'check' : 'x', 11, 3)}</div><div><div class="cl">${t}</div><div class="cd">${d}</div></div></div>`).join('')}</div>
-      <p class="hint" style="margin-top:8px">A passed planned date (${fmtD(m.planned)}) never makes a milestone invoice-eligible.</p></div>
-    <div class="card flat" style="margin-top:12px"><h3>Service receipt (SRN)</h3>${m.srnRequired ? '' : '<p class="hint" style="margin-top:0">An accepted SRN is <b>not required</b> for this milestone.</p>'}
-      ${srn ? `<div class="row"><b>${esc(srn.number)}</b> ${sb(srn.status)} <span class="hint">${money(srn.serviceValue)}</span><span class="spacer"></span><a class="link" href="#/srn/${srn.id}">Open SRN</a></div>` : '<div class="hint">No SRN linked.</div>'}
-      <div class="row" style="margin-top:10px">${actBtn('ms-link', srn ? 'Change linked SRN' : 'Link existing SRN', { data: { id: m.id } })}${gbtn('srn.create', 'go', 'Create SRN for this milestone', { data: { hash: `#/srn/new?po=${po.id}&ms=${m.id}` }, icn: 'plus' })}</div></div>
-    <div class="card flat" style="margin-top:12px"><h3>Linked invoices</h3>${allocsOn('milestone', m.id).map(({ inv, a }) => `<div class="row" style="padding:4px 0">${invLink(inv)} <span class="hint">${esc(inv.number)}</span> ${sb(inv.status)}<span class="spacer"></span><b>${money(a.value)}</b></div>`).join('') || '<div class="hint">No invoice allocated to this milestone.</div>'}</div>
-   </div></div>
-  <div class="sec-title">History</div><ul class="tl">${db.audit.filter(a => a.ref === `${po.number} / ${m.code}`).map(a => `<li class="${a.kind === 'ok' ? 'ok' : a.kind === 'bad' ? 'bad' : ''}"><div class="tt">${esc(a.text)}</div><div class="tm">${esc(a.by)} · ${fmtDT(a.at)}</div></li>`).join('') || '<li><div class="tm">No activity yet.</div></li>'}</ul></div></div>`;
+  const gst = r2(m.amount * gstOf(po) / 100);
+  const need = ['Pending Approval', 'Rejected'].includes(m.status) ? roleBanner('ms.decide', 'Approving this milestone') : m.status === 'Approved' && g.ok ? roleBanner('ms.submit', 'Marking a milestone complete') : '';
+  const decide = ['Pending Approval', 'Rejected'].includes(m.status) ? `<div class="card tint" style="margin-bottom:18px"><div class="card-t">Approve this milestone?</div><div class="hint" style="margin:-4px 0 12px">Approving ${m.code} (${money(m.amount)}) lets the team start on it. ${m.needsReceipt ? `It then needs an accepted ${L} before it can be marked complete.` : 'It can then be marked complete.'}</div><div class="row">${gbtn('ms.decide', 'ms-approve', 'Approve milestone', { cls: 'btn-primary', data: { id: m.id }, icn: 'check' })}${m.status === 'Pending Approval' ? gbtn('ms.decide', 'ms-reject', 'Reject', { cls: 'btn-danger', data: { id: m.id } }) : ''}</div></div>` : '';
+  const head = `<div class="rc-top"><div><div class="rc-line"><b>PO Number:</b> ${esc(po.number)}</div><div class="rc-line"><b>Milestone ID:</b> ${esc(m.code)}</div></div><div class="rc-btns">${sb(m.status)} ${sb(bill)}</div></div>
+  <div class="rc-items"><b>All Details</b></div>
+  <div class="tbl-wrap boxedtbl"><table class="tbl sm plain"><thead><tr><th>Milestone</th><th>Due Date</th><th>% of PO</th><th>Amount</th><th>GST</th><th>Total</th><th>${L} Gate</th></tr></thead><tbody><tr><td><b>${esc(m.name)}</b><div class="sub">${esc(po.title)}</div></td><td>${fmtD(m.planned)}</td><td>${fmtNum(m.pct)}%</td><td>${fmtNum(m.amount)}</td><td>${gstOf(po)}%</td><td>${fmtNum(r2(m.amount + gst))}</td><td>${m.needsReceipt ? (rec ? `${esc(rec.number)}` : '<span class="warn-t">Required</span>') : 'Not required'}</td></tr></tbody></table></div>
+  <div class="rc-sum"><div><b>Milestone Amount</b><span>${fmtNum(m.amount)}</span></div><div><b>Tax</b><span>${fmtNum(gst)}</span></div><div><b>Total Milestone Amount</b><span>${fmtNum(r2(m.amount + gst))}</span></div></div>
+  <div style="height:18px"></div>`;
+  const showForm = m.status === 'Approved' && g.ok;
+  return `${head}${need}${stBanner(banner[0], banner[1], banner[2] || '')}${decide}
+  ${strip([['Amount', money(m.amount), `${fmtNum(m.pct)}% of PO`], ['Ready to invoice', money(Math.max(0, r2(ent - u.value))), ent > 0 ? 'completed & cleared' : 'not yet eligible', ent - u.value > EPS ? 'hl' : ''], ['Invoiced', money(u.value), u.invs.map(invRef).join(', ')], ['Remaining', money(r2(m.amount - u.value))]])}
+  <div class="sec-h">Progress</div><div class="checklist">${check.map(([ok, t, d]) => `<div class="it"><div class="ci ${ok ? 'ok' : 'no'}">${icon(ok ? 'check' : 'x', 11, 3)}</div><div><div class="strong">${t}</div><div class="d">${d}</div></div></div>`).join('')}</div>
+  ${m.needsReceipt ? `<div class="sec-h">${L === 'GRN' ? 'Goods receipt (GRN)' : 'Service receipt (SRN)'} gate</div>
+    <div class="card flat">${rec ? `<div class="row"><b>${esc(rec.number)}</b> ${sb(rec.reversed ? 'Reversed' : rec.status)} <span class="hint">${isGoods(po) ? `${fmtNum(rec.received)} units delivered · ${fmtNum(rec.accepted)} accepted` : `${money(rec.serviceValue)} service value`}</span><span class="spacer"></span><button class="link" data-act="rc-open" data-kind="${isGoods(po) ? 'grn' : 'srn'}" data-id="${rec.id}">Open ${L}</button></div>` : `<div class="hint">No ${L} linked yet. The ${L} is the proof that the ${isGoods(po) ? 'goods arrived and passed inspection' : 'service was delivered and accepted'}.</div>`}
+    ${u.value > EPS ? '' : `<div class="row" style="margin-top:12px">${isGoods(po) ? gbtn('grn.create', 'grn-new', `Create GRN for ${m.code}`, { data: { po: po.id, ms: m.id }, icn: 'plus', cls: 'btn-outline btn-sm' }) : gbtn('srn.create', 'srn-new', `Create SRN for ${m.code}`, { data: { po: po.id, ms: m.id }, icn: 'plus', cls: 'btn-outline btn-sm' })}${actBtn('ms-link', rec ? `Change linked ${L}` : `Link existing ${L}`, { data: { id: m.id }, icn: 'link', cls: 'btn-outline btn-sm' })}${rec ? actBtn('ms-unlink', 'Unlink', { data: { id: m.id }, cls: 'btn-ghost btn-sm' }) : ''}</div>`}</div>
+    ${m.needsReceipt && !rec && !can(isGoods(po) ? 'grn.create' : 'srn.create') ? roleBanner(isGoods(po) ? 'grn.create' : 'srn.create', `Creating the ${L}`) : ''}` : ''}
+  ${showForm ? `<div class="sec-h">Mark as complete</div><div class="fgrid">${F.text('Completion date', 'actualDate', { type: 'date', req: 1 })}${F.ro('Status', 'Approved')}</div>${F.area('Remarks (optional)', 'remarks', { ph: 'What was completed?' })}<div class="field"><label>Supporting documents (optional)</label>${attachBox('evidence', f && f.evidence)}</div>` : ''}
+  ${m.status === 'Completed' ? `<div class="sec-h">Completion record</div><div class="kvg c2">${kv('Completed on', fmtD(m.actualDate))}${kv('Completed by', esc(m.completedBy) || '—')}${kv('Remarks', esc(m.remarks) || '—')}${kv('Documents', attachChips(m.evidence) || '—')}</div>` : ''}
+  ${u.invs.length ? `<div class="sec-h">Invoices</div>${allocsOn('milestone', m.id).map(({ inv, a }) => `<div class="row" style="padding:5px 0">${invLink(inv)} <span class="hint">${esc(inv.number)}</span> ${sb(inv.status)}<span class="spacer"></span><b>${money(a.value)}</b></div>`).join('')}` : ''}
+  <div class="sec-h">History</div>${histList(`${po.number} / ${m.code}`, po.id)}`;
+}
+function msPanelFoot(m) {
+  const po = getPO(m.poId), ent = msEnt(m, po), u = usage('milestone', m.id), g = msGate(m, po), a = [];
+  if (['Pending Approval', 'Rejected'].includes(m.status)) { if (m.status === 'Pending Approval') a.push(gbtn('ms.decide', 'ms-reject', 'Reject', { cls: 'btn-danger', data: { id: m.id } })); a.push(gbtn('ms.decide', 'ms-approve', 'Approve milestone', { cls: 'btn-primary', data: { id: m.id }, icn: 'check' })); }
+  if (m.status === 'Approved') a.push(g.ok ? gbtn('ms.submit', 'ms-complete', 'Mark complete', { cls: 'btn-primary', data: { id: m.id }, icn: 'check' }) : actBtn('ms-complete', 'Mark complete', { cls: 'btn-primary', dis: true, title: `Locked: ${g.reason}` }));
+  if (ent - u.value > EPS) a.push(gbtn('inv.create', 'inv-new', `Submit Invoice for ${m.code}`, { cls: 'btn-primary', data: { po: po.id, ms: m.id }, icn: 'receipt' }));
+  return a.join('');
+}
+ACT['ms-complete'] = el => { const f = ui.f; done(A.msComplete(el.dataset.id, { actualDate: f.actualDate, remarks: f.remarks, evidence: f.evidence })); };
+ACT['ms-approve'] = el => { const m = getMS(el.dataset.id), po = getPO(m.poId); confirmBox({ title: 'Approve milestone', message: `Approve <b>${esc(msFull(m))}</b> (${money(m.amount)})? ${m.needsReceipt ? `It then needs an accepted ${recName(po)} before it can be marked complete.` : 'It can then be marked complete.'}`, confirmLabel: 'Approve', onConfirm: () => done(A.msApprove(m.id)) }); };
+ACT['ms-reject'] = el => reasonModal({ title: 'Reject milestone', label: 'Rejection reason', btn: 'Reject milestone', onSubmit: reason => { done(A.msReject(el.dataset.id, reason)); } });
+ACT['ms-unlink'] = el => done(A.msLinkReceipt(el.dataset.id, ''));
+ACT['ms-link'] = el => {
+  const m = getMS(el.dataset.id), po = getPO(m.poId), L = recName(po);
+  const list = (isGoods(po) ? grnsOf(po) : srnsOf(po)).filter(r => !['Rejected'].includes(r.status) && !r.reversed);
+  const opts = [['', `— No ${L} —`], ...list.map(r => [r.id, `${r.number} · ${isGoods(po) ? fmtNum(r.received) + ' units' : money(r.serviceValue)} · ${r.status}${r.milestoneId && r.milestoneId !== m.id ? ' (used by ' + getMS(r.milestoneId).code + ')' : ''}`])];
+  openModal({ title: `Link ${L} to ${m.code}`, submitLabel: 'Link', html: fld(`${L}`, 'rec', { opts, value: m.receiptId || '' }) + `<p class="hint" style="margin-top:6px">The milestone and the ${L} stay separate records: the milestone is invoice-eligible only when it is approved <b>and</b> the ${L} is Accepted.</p>`, onSubmit: v => { done(A.msLinkReceipt(m.id, v.rec)); } });
 };
-function lifecycle(m, po, g, bill) {
-  const sub = ['Submitted for Acceptance', 'Approved'].includes(m.status), apr = m.status === 'Approved';
-  const steps = [['Evidence submitted', sub], ['Milestone approved', apr], ...(m.srnRequired ? [['SRN accepted', g.ok]] : []), ['Invoiced', bill === 'Invoiced']];
-  const cur = steps.findIndex(s => !s[1]);
-  return `<div class="stepper" style="margin-top:14px">${steps.map(([t, d], i) => `<div class="step ${d ? 'done' : i === cur ? 'on' : ''}"><span class="n">${d ? '✓' : i + 1}</span>${t}</div>`).join('')}</div>`;
-}
-ACT['ms-submit-page'] = el => { const f = ui.f; done(A.msSubmit(el.dataset.id, { actualDate: f.actualDate, remarks: f.remarks, evidence: f.evidence }), () => { ui.f = null; }); };
-ACT['ms-approve'] = el => { const m = getMS(el.dataset.id); confirmBox({ title: 'Approve milestone', message: `Approve <b>${esc(msFull(m))}</b> (${money(m.amount)})? ${m.srnRequired ? 'It still needs an accepted SRN before it can be invoiced.' : 'It becomes invoice-eligible immediately.'}`, confirmLabel: 'Approve', onConfirm: () => { closeOverlays(); done(A.msApprove(m.id)); } }); };
-ACT['ms-reject'] = el => reasonModal({ title: 'Reject milestone', label: 'Rejection reason', btn: 'Reject milestone', onSubmit: reason => { closeOverlays(); done(A.msReject(el.dataset.id, reason)); } });
-ACT['ms-info'] = el => reasonModal({ title: 'Request more information', label: 'Information required', btn: 'Send request', danger: false, onSubmit: note => { closeOverlays(); done(A.msRequestInfo(el.dataset.id, note)); } });
-ACT['ms-link'] = el => { const m = getMS(el.dataset.id), po = getPO(m.poId); const opts = [['', '— No SRN —'], ...srnsOf(po).filter(s => !s.milestoneId || s.milestoneId === m.id || true).map(s => [s.id, `${s.number} · ${money(s.serviceValue)} · ${s.status}${s.milestoneId && s.milestoneId !== m.id ? ' (linked to ' + getMS(s.milestoneId).code + ')' : ''}`])];
-  openModal({ title: `Link SRN to ${m.code}`, submitLabel: 'Link', html: fld('Service receipt', 'srn', { opts, value: m.srnId || '' }) + '<p class="hint">The milestone and SRN stay separate records. If the milestone requires an accepted SRN, it only becomes invoice-eligible once that SRN is Accepted.</p>', onSubmit: v => { closeOverlays(); done(A.msLinkSrn(m.id, v.srn)); } }); };
-function msDrawer(id) {
-  const m = getMS(id), po = getPO(m.poId), u = usage('milestone', m.id), g = msGate(m, po), ent = msEnt(m, po), srn = m.srnId && getSRN(m.srnId);
-  const acts = [];
-  if (m.status === 'Submitted for Acceptance') acts.push(gbtn('ms.decide', 'ms-approve', 'Approve', { cls: 'btn-primary', data: { id: m.id } }), gbtn('ms.decide', 'ms-info', 'Request info', { data: { id: m.id } }), gbtn('ms.decide', 'ms-reject', 'Reject', { cls: 'btn-danger-soft', data: { id: m.id } }));
-  if (['Pending Acceptance', 'More Info Requested', 'Rejected'].includes(m.status)) acts.push(actBtn('go', 'Open to submit for acceptance', { cls: 'btn-primary', data: { hash: `#/milestone/${m.id}` } }));
-  openDrawer(`${m.code} — ${m.name}`, `
-    <div class="row" style="margin-bottom:10px">${sb(m.status)} ${sb(msBilling(m, po))}<span class="spacer"></span><a class="link" href="#/milestone/${m.id}">Open full page</a></div>
-    <div class="kv"><div class="k">PO</div><div>${esc(po.number)}</div><div class="k">Amount</div><div><b>${money(m.amount)}</b> (${fmtNum(m.pct)}%)</div><div class="k">Planned</div><div>${fmtD(m.planned)}</div><div class="k">Actual</div><div>${fmtD(m.actualDate)}</div><div class="k">Approver</div><div>${esc(m.approver)}</div>
-    <div class="k">Acceptance criteria</div><div>${esc(m.criteria) || '—'}</div><div class="k">Evidence</div><div>${attachChips(m.evidence) || '—'}</div><div class="k">Linked SRN</div><div>${srn ? `${esc(srn.number)} ${sb(srn.status)}` : m.srnRequired ? '<span class="warn-t">Required — none linked</span>' : 'Not required'}</div>
-    <div class="k">Eligible now</div><div><b>${money(Math.max(0, r2(ent - u.value)))}</b></div><div class="k">Invoiced</div><div>${money(u.value)} ${u.invs.map(invLink).join(', ')}</div><div class="k">Remaining balance</div><div>${money(r2(m.amount - u.value))}</div></div>
-    ${!ent && m.status === 'Approved' ? alertBox('warn', 'Not invoice-eligible', esc(g.reason)) : ''}
-    <div class="row">${acts.join('')}</div>`, true);
-}
 
-/* ================================================================ Progress claims */
-ROUTES.claims = () => `<div>${pageHead({ title: 'Progress Claims', crumbs: [['Billing Schedules', '#/schedules'], ['Progress Claims']], right: gbtn('claim.create', 'go', 'New progress claim', { cls: 'btn-primary', icn: 'plus', data: { hash: '#/claim/new' } }) })}
-  <div class="content">${alertBox('info', 'Certified work-progress mode', 'Applies only to progressive POs configured with “Certified work progress”. Current claim = new cumulative − previously certified. Only newly certified, unconsumed value becomes invoice-eligible.')}${listHtml('claims', {
-    pills: { name: 'status', values: ["Draft","Submitted","Certified","Rejected"], get: c => c.status },
-    searchPh: 'Search claim, PO…',
-    filters: [{ name: 'status', label: 'Status', options: () => ['Draft', 'Submitted', 'Certified', 'Rejected'] }, { name: 'po', label: 'PO', options: () => db.pos.filter(poCertified).map(p => [p.id, p.number]) }],
-    rows: () => db.claims.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.seq - a.seq),
-    match: (c, st) => matchText(st, c.number, getPO(c.poId).number, c.period) && matchIn(st, 'status', c.status) && matchIn(st, 'po', c.poId),
-    cols: ['Claim', 'PO', 'Period', '>Previous cumulative certified', '>Current claim', '>Cumulative claimed', '>Certified', 'Status', 'Linked invoice', '>Remaining billable'],
-    row: c => { const v = claimView(c), u = usage('claim', c.id); return `<tr class="click" data-act="claim-drawer" data-id="${c.id}"><td class="strong">${c.number}</td><td>${esc(getPO(c.poId).number)}</td><td>${esc(c.period)}</td><td class="num">${fmtNum(v.prev)}</td><td class="num">${fmtNum(v.current)}</td><td class="num">${fmtNum(v.cum)}</td><td class="num">${c.status === 'Certified' ? fmtNum(v.certified) : '—'}</td><td>${sb(c.status)}</td><td>${u.invs.map(invLink).join(', ') || '—'}</td><td class="num strong">${c.status === 'Certified' ? fmtNum(v.remaining) : '—'}</td></tr>`; },
-  })}</div></div>`;
-
-ROUTES.claim = r => {
-  const id = r.parts[1];
-  if (id === 'new') return claimForm(r);
-  const c = getClaim(id); if (!c) return notFound('Progress claim');
-  ui.after = () => claimDrawer(c.id);
-  return ROUTES.claims();
+/* ================================================================ certified progress claims (Services) */
+function claimsBlock(po, s) {
+  const cs = claimsOf(po), cum = cumCertified(po);
+  return `<div class="sec" style="margin-top:22px">Progress claims<span class="sub">Certified work progress — current claim = new cumulative − previously certified</span><span class="spacer"></span>${po.status === 'Approved' ? gbtn('claim.create', 'claim-new', 'New progress claim', { cls: 'btn-primary', data: { po: po.id }, icn: 'plus' }) : ''}</div>
+  ${strip([['PO value', money(s.value)], ['Cumulative certified', money(cum), `${fmtNum(pct(cum, s.value))}% of PO`], ['Invoiced', money(s.invoiced)], ['Ready to invoice', money(s.remaining), 'certified − invoiced', 'hl']])}
+  <div class="tbl-wrap" style="margin-top:16px"><table class="tbl"><thead><tr><th>Claim</th><th>Period</th><th class="right">Previously certified</th><th class="right">Current claim</th><th class="right">Cumulative claimed</th><th class="right">Certified</th><th>Status</th><th>Invoice</th><th class="right">Ready to invoice</th><th></th></tr></thead><tbody>
+  ${cs.map(c => { const v = claimView(c), u = usage('claim', c.id); return `<tr class="click" data-act="claim-open" data-id="${c.id}"><td class="strong">${c.number}</td><td>${esc(c.period)}</td><td class="num">${fmtNum(v.prev)}</td><td class="num">${fmtNum(v.current)}</td><td class="num">${fmtNum(v.cum)}</td><td class="num">${c.status === 'Certified' ? fmtNum(v.certified) : '—'}</td><td>${sb(c.status)}</td><td>${u.invs.map(invLink).join(', ') || '—'}</td><td class="num strong">${c.status === 'Certified' ? fmtNum(v.remaining) : '—'}</td><td class="act"><button class="btn-view" data-act="claim-open" data-id="${c.id}">${icon('open', 12, 2)}View</button></td></tr>`; }).join('') || emptyRow(10, 'No progress claims yet.')}</tbody></table></div>`;
+}
+ACT['claim-new'] = el => {
+  const poId = el.dataset.po;
+  openPanel({ key: 'claim-new', title: 'New progress claim', sub: 'Claim cumulative progress for certification',
+    init: () => ({ poId, period: `${MONTHS[new Date().getMonth()]} ${new Date().getFullYear()}`, claimedCum: '', remarks: '', evidence: [] }),
+    body: () => { const f = ui.f, po = getPO(poId);
+      return `<div class="fgrid">${F.ro('Purchase order', `<b>${esc(po.number)}</b>&nbsp;${esc(getSup(po.supplierId).name)}`, { cls: 'span2' })}${F.ro('PO value', money(poNet(po)))}${F.ro('Previously certified (cumulative)', money(cumCertified(po)))}
+      ${F.text('Claim period', 'period', { req: 1 })}${F.text('New cumulative claimed (INR)', 'claimedCum', { type: 'number', step: 'any', num: 1, req: 1, ph: 'e.g. 50000' })}</div>
+      <div class="field"><label>Current claim (derived)</label><div class="ro strong" id="c-cur"></div><div class="fhint">= new cumulative − previously certified</div></div><div id="rc-val"></div>
+      ${F.area('Remarks', 'remarks')}<div class="field"><label>Supporting evidence <span class="req">*</span></label>${attachBox('evidence', f.evidence)}</div>`; },
+    foot: () => gbtn('claim.create', 'claim-save', 'Submit for certification', { cls: 'btn-dark' }),
+    derive: () => { const f = ui.f, po = getPO(f.poId), prev = cumCertified(po), cum = +f.claimedCum || 0, c = $('#c-cur'); if (!c) return;
+      c.textContent = money(cum ? r2(cum - prev) : 0);
+      $('#rc-val').innerHTML = cum && cum <= prev + EPS ? alertBox('err', 'Already certified', `${money(prev)} has already been certified. The new cumulative value must exceed it.`) : cum > poNet(po) + EPS ? alertBox('err', 'Exceeds PO value', `Cumulative claimed value exceeds the PO value ${money(poNet(po))}.`) : alertBox('info', '', `Maximum claimable now: ${money(r2(poNet(po) - prev))}. Value becomes invoice-eligible only once certified.`); } });
 };
-function claimInit(q) {
-  const po = q.po && getPO(q.po), ok = po && po.status === 'Approved' && poCertified(po);
-  return { poId: ok ? po.id : '', lineId: ok ? po.lines[0].id : '', period: `${MONTHS[new Date().getMonth()]} ${new Date().getFullYear()}`, claimedCum: '', evidence: [], approver: 'Procurement Manager', srnId: '', remarks: '' };
-}
-HOOKS.claimpo = () => { const po = getPO(ui.f.poId); ui.f.lineId = po ? po.lines[0].id : ''; ui.f.srnId = ''; };
-function claimForm(r) {
-  if (!ui.f || ui.fKey !== 'claim-new') { ui.f = claimInit(r.q); ui.fKey = 'claim-new'; }
-  const f = ui.f, po = getPO(f.poId), pos = approvedPOs(poCertified);
-  ui.derive = claimDerive;
-  return `<div>${pageHead({ title: 'New Progress Claim', crumbs: [['Billing Schedules', '#/schedules'], ['Progress Claims', '#/claims'], ['New claim']] })}
-  <div class="content"><div class="card" style="margin-top:16px"><h3>Claim details</h3><div class="fgrid">
-    <div class="field span2"><label>Approved PO (certified work progress) *</label><select class="input" data-f="poId" data-hook="claimpo" data-r><option value="">— Select a PO —</option>${opt(pos.map(p => [p.id, poOptLabel(p)]), f.poId)}</select><div class="fhint">Only POs whose progress basis is “Certified work progress” are listed.</div></div>
-    ${po ? `<div class="field"><label>PO line</label><select class="input" data-f="lineId" data-r>${opt(po.lines.map(l => [l.id, `${l.no}. ${l.desc}`]), f.lineId)}</select></div>
-    <div class="field"><label>Claim period *</label><input class="input" data-f="period" value="${esc(f.period)}"></div>
-    <div class="field"><label>Contract value</label><div class="ro" id="c-contract"></div></div>
-    <div class="field"><label>Previous cumulative certified value</label><div class="ro" id="c-prev"></div></div>
-    <div class="field"><label>New cumulative claimed value (AED) *</label><input class="input num" type="number" min="0" step="any" data-t="num" data-f="claimedCum" value="${f.claimedCum}" placeholder="e.g. 50000"></div>
-    <div class="field"><label>Current claim (derived)</label><div class="ro strong" id="c-cur"></div><div class="fhint">= new cumulative − previously certified</div></div>
-    <div class="field"><label>Approver</label><select class="input" data-f="approver">${opt(APPROVERS_LIST, f.approver)}</select></div>
-    ${po.requireSrn ? `<div class="field"><label>Linked SRN (accepted SRN required) *</label><select class="input" data-f="srnId"><option value="">— Select SRN —</option>${opt(srnsOf(po).map(s => [s.id, `${s.number} · ${money(s.serviceValue)} · ${s.status}`]), f.srnId)}</select></div>` : ''}
-    <div class="field span3"><label>Remarks</label><input class="input" data-f="remarks" value="${esc(f.remarks)}"></div>
-    <div class="field span3"><label>Supporting evidence *</label>${attachBox('evidence', f.evidence, 'Attach measurement sheets / site reports')}</div>` : ''}</div><div id="claim-val" style="margin-top:12px"></div></div>
-  ${po ? `<div class="form-actions">${actBtn('go', 'Cancel', { cls: 'btn-ghost', data: { hash: '#/claims' } })}<span class="spacer"></span>${gbtn('claim.create', 'claim-save', 'Save as Draft', { cls: 'btn-outline', data: { m: 'draft' } })}${gbtn('claim.create', 'claim-save', 'Submit for review', { cls: 'btn-primary', data: { m: 'submit' } })}</div>` : ''}</div></div>`;
-}
-function claimDerive() {
-  const f = ui.f, po = getPO(f.poId); if (!po || !$('#c-cur')) return;
-  const line = lineOf(po, f.lineId) || po.lines[0], prev = cumCertified(po), cum = +f.claimedCum || 0;
-  $('#c-contract').textContent = money(lineNet(line)); $('#c-prev').textContent = money(prev); $('#c-cur').textContent = money(cum ? r2(cum - prev) : 0);
-  const rem = r2(lineNet(line) - prev);
-  $('#claim-val').innerHTML = cum && cum <= prev + EPS ? alertBox('err', 'Already certified', `${money(prev)} has already been certified. The supplier must not invoice (or claim) it again — the new cumulative value must exceed ${money(prev)}.`) : cum > lineNet(line) + EPS ? alertBox('err', 'Exceeds contract', `Cumulative claimed value exceeds the contract line value ${money(lineNet(line))}.`) : alertBox('info', '', `Maximum claimable now: ${money(rem)} (contract ${money(lineNet(line))} − previously certified ${money(prev)}). Value only becomes invoice-eligible once certified.`);
-}
-ACT['claim-save'] = el => { const f = ui.f; done(A.createClaim({ ...f, claimedCum: +f.claimedCum || 0 }, el.dataset.m), r => { ui.f = null; go(`#/claim/${r.id}`); }); };
-function claimDrawer(id) {
-  const c = getClaim(id), po = getPO(c.poId), v = claimView(c), u = usage('claim', c.id), acts = [];
-  if (c.status === 'Draft') acts.push(gbtn('claim.create', 'claim-submit', 'Submit for review', { cls: 'btn-primary', data: { id: c.id } }));
-  if (c.status === 'Submitted') acts.push(gbtn('claim.decide', 'claim-reject', 'Reject', { cls: 'btn-danger-soft', data: { id: c.id } }), gbtn('claim.decide', 'claim-certify', 'Certify claim', { cls: 'btn-primary', data: { id: c.id }, icn: 'check' }));
-  if (c.status === 'Certified' && v.remaining > EPS) acts.push(gbtn('inv.create', 'go', 'Create invoice', { cls: 'btn-primary', data: { hash: `#/invoice/new?po=${po.id}` }, icn: 'receipt' }));
-  openDrawer(`${c.number} · ${c.period}`, `<div class="row" style="margin-bottom:10px">${sb(c.status)}<span class="spacer"></span><a class="link" href="#/po/${po.id}?tab=billing">Open ${esc(po.number)}</a></div>
-    <div class="kv"><div class="k">PO &amp; line</div><div>${esc(po.number)} · ${esc(lineOf(po, c.lineId).desc)}</div><div class="k">Claim period</div><div>${esc(c.period)}</div><div class="k">Previous cumulative certified</div><div>${money(v.prev)}</div><div class="k">New cumulative claimed</div><div>${money(v.cum)}</div><div class="k">Current claim</div><div><b>${money(v.current)}</b> <span class="hint">(${fmtNum(v.cum)} − ${fmtNum(v.prev)})</span></div><div class="k">Certified value</div><div>${c.status === 'Certified' ? `<b>${money(v.certified)}</b>` : '—'}</div><div class="k">Approver</div><div>${esc(c.approver)}</div><div class="k">Linked SRN</div><div>${po.requireSrn ? (v.srn ? `${esc(v.srn.number)} ${sb(v.srn.status)}` : '<span class="warn-t">Required — none linked</span>') : 'Not required'}</div><div class="k">Evidence</div><div>${attachChips(c.evidence) || '—'}</div><div class="k">Linked invoice</div><div>${u.invs.map(invLink).join(', ') || '—'}</div><div class="k">Remaining billable certified</div><div><b>${money(v.remaining)}</b></div>${c.rejectReason ? `<div class="k">Rejection reason</div><div class="bad-t">${esc(c.rejectReason)}</div>` : ''}</div>
-    <div class="row">${acts.join('')}</div>`, true);
-}
-ACT['claim-submit'] = el => { closeOverlays(); done(A.submitClaim(el.dataset.id)); };
-ACT['claim-reject'] = el => reasonModal({ title: 'Reject progress claim', label: 'Rejection reason', btn: 'Reject claim', onSubmit: reason => { closeOverlays(); done(A.rejectClaim(el.dataset.id, reason)); } });
-ACT['claim-certify'] = el => { const c = getClaim(el.dataset.id), v = claimView(c); openModal({ title: `Certify ${c.number}`, submitLabel: 'Certify', html: `<p class="hint" style="margin-top:0">Cumulative claimed ${money(v.cum)} − previously certified ${money(v.prev)} = current claim <b>${money(v.current)}</b>. Only this newly certified value becomes invoice-eligible.</p>${fld('Certified value (AED)', 'val', { type: 'number', value: v.current, step: 'any' })}`, onSubmit: x => { const r = A.certifyClaim(c.id, +x.val); if (!r.ok) { toast(r.msg, 'err'); return false; } closeOverlays(); toast(r.msg); render(); } }); };
-
-/* ================================================================ Billing schedules overview */
-ROUTES.schedules = () => {
-  const pos = db.pos.filter(p => p.billingMethod !== 'Standard');
-  return `<div>${pageHead({ title: 'Billing Schedules', crumbs: [['Billing Schedules']] })}<div class="content">
-  <div class="grid-2" style="margin-top:16px">
-    <div class="method-banner progressive" style="margin:0"><div class="ic">${icon('layers', 14)}</div><div><b>Progressive billing</b><br>Eligibility is <b>derived from accepted receipts</b> (GRN quantities / SRN values) or separately certified work progress. Many invoices over time; each consumes part of an eligible receipt.</div></div>
-    <div class="method-banner milestone" style="margin:0"><div class="ic">${icon('flag', 14)}</div><div><b>Milestone billing</b><br>Eligibility is the <b>amount allocated to an approved contractual milestone</b>, subject to SRN / acceptance gates. By default one invoice per milestone.</div></div></div>
-  <div class="sec-title">Progressive and milestone POs</div>
-  <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>PO</th><th>Supplier</th><th>Method</th><th>Eligibility source</th><th>Schedule</th><th class="right">PO value</th><th class="right">Eligible (accepted)</th><th class="right">Invoiced</th><th class="right">Remaining eligible</th><th>Status</th></tr></thead><tbody>
-  ${pos.map(p => { const s = poSummary(p); return `<tr class="click" data-act="go" data-hash="#/po/${p.id}?tab=billing"><td class="strong">${esc(p.number)}</td><td>${esc(getSup(p.supplierId).name)}</td><td>${poMethodBadge(p)}</td><td>${p.billingMethod === 'Milestone' ? 'Approved milestones' : poCertified(p) ? 'Certified progress claims' : 'Accepted GRN / SRN'}</td><td>${p.billingMethod === 'Milestone' ? `${msOf(p).length} milestones · ${p.scheduleStatus}` : poCertified(p) ? `${claimsOf(p).length} claims` : `${grnsOf(p).length} GRN · ${srnsOf(p).length} SRN`}</td><td class="num">${fmtNum(s.value)}</td><td class="num">${fmtNum(s.accepted)}</td><td class="num">${fmtNum(s.invoiced)}</td><td class="num strong">${fmtNum(s.remaining)}</td><td>${sb(p.status)}</td></tr>`; }).join('') || emptyRow(10, 'No progressive or milestone POs.')}</tbody></table></div>
-  <div class="row" style="margin-top:14px">${actBtn('go', 'View milestones', { data: { hash: '#/milestones' } })}${actBtn('go', 'View progress claims', { data: { hash: '#/claims' } })}</div></div></div>`;
+ACT['claim-save'] = () => { const f = ui.f; done(A.createClaim({ ...f, claimedCum: +f.claimedCum || 0 }), () => { closePanel(); go(`#/po/${f.poId}?tab=billing`); }); };
+ACT['claim-open'] = el => {
+  const id = el.dataset.id, get = () => getClaim(id);
+  openPanel({ key: 'claim-' + id, mid: true, title: () => `${get().number} · ${get().period}`, sub: () => esc(getPO(get().poId).number),
+    body: () => { const c = get(), po = getPO(c.poId), v = claimView(c), u = usage('claim', c.id);
+      const bn = { Submitted: ['blue', 'Awaiting certification', 'Not invoice-eligible until certified.'], Certified: ['green', 'Certified', `${money(v.certified)} certified — ${money(v.remaining)} still to invoice.`], Rejected: ['red', 'Rejected', c.rejectReason || ''] }[c.status];
+      return `${stBanner(bn[0], bn[1], bn[2])}${strip([['Previously certified', money(v.prev)], ['Cumulative claimed', money(v.cum)], ['Current claim', money(v.current), `${fmtNum(v.cum)} − ${fmtNum(v.prev)}`], ['Certified', c.status === 'Certified' ? money(v.certified) : '—'], ['Ready to invoice', money(v.remaining), '', 'hl']])}
+      <div class="sec-h">Details</div><div class="kvg c2">${kv('PO', poLink(po))}${kv('Period', esc(c.period))}${kv('Remarks', esc(c.remarks) || '—')}${kv('Evidence', attachChips(c.evidence) || '—')}${kv('Invoices', u.invs.map(invLink).join(', ') || '—')}</div>
+      <div class="sec-h">History</div>${histList(c.number, po.id)}`; },
+    foot: () => { const c = get(), po = getPO(c.poId), v = claimView(c), a = [];
+      if (c.status === 'Submitted') a.push(gbtn('claim.decide', 'claim-reject', 'Reject', { cls: 'btn-danger', data: { id } }), gbtn('claim.decide', 'claim-certify', 'Certify claim', { cls: 'btn-primary', data: { id }, icn: 'check' }));
+      if (c.status === 'Certified' && v.remaining > EPS) a.push(gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary', data: { po: po.id }, icn: 'receipt' }));
+      return a.join(''); } });
 };
+ACT['claim-reject'] = el => reasonModal({ title: 'Reject progress claim', label: 'Rejection reason', btn: 'Reject claim', onSubmit: reason => { done(A.rejectClaim(el.dataset.id, reason)); } });
+ACT['claim-certify'] = el => { const c = getClaim(el.dataset.id), v = claimView(c); openModal({ title: `Certify ${c.number}`, submitLabel: 'Certify', html: `<p style="margin-bottom:12px">Cumulative claimed ${money(v.cum)} − previously certified ${money(v.prev)} = current claim <b>${money(v.current)}</b>. Only this newly certified value becomes invoice-eligible.</p>${fld('Certified value (INR)', 'val', { type: 'number', value: v.current, step: 'any' })}`, onSubmit: x => { const r = A.certifyClaim(c.id, +x.val); if (!r.ok) { toast(r.msg, 'err'); return false; } toast(r.msg); render(); } }); };

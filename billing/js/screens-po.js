@@ -1,368 +1,285 @@
 /* =====================================================================
-   screens-po.js — PO list, create/edit wizard (incl. schedule builder), PO detail
+   screens-po.js — PO list, create / edit drawer (incl. milestone schedule), PO detail
    ===================================================================== */
-const notFound = what => `<div>${pageHead({ title: `${what} not found` })}<div class="content"><div class="empty-state">That record does not exist (the demo data may have been reset).<br><br>${actBtn('go', 'Go to dashboard', { cls: 'btn-primary', data: { hash: '#/dashboard' } })}</div></div></div>`;
-const CATEGORIES = ['Goods', 'Services', 'Project Services'];
-const TERMS = ['Net 30', 'Net 45', 'Net 60', 'Advance 20% / Net 30'];
-const UOMS = ['Units', 'Lot', 'Man-days', 'Hours', 'Sets', 'Metres'];
-const LOCATIONS = ['Jebel Ali Plant — Warehouse A', 'Jebel Ali Plant — Site', 'DICE HQ — Dubai Investments Park', 'Sharjah Distribution Centre'];
-const APPROVERS_LIST = ['Procurement Manager', 'Warehouse / Service Receiver', 'Project Engineer'];
-const EXAMPLE_SCHEDULE = () => [
-  { name: 'Design Approval', description: 'Detailed design package approved by DICE engineering.', pct: 20, amount: 0, planned: daysFromNow(30), criteria: 'Signed design approval certificate', evidenceReq: 'Approved drawings, sign-off sheet', approver: 'Procurement Manager', srnRequired: false },
-  { name: 'Installation Complete', description: 'Machinery delivered and mechanically installed.', pct: 50, amount: 0, planned: daysFromNow(75), criteria: 'Installation checklist signed', evidenceReq: 'Installation report, photos', approver: 'Procurement Manager', srnRequired: false },
-  { name: 'Commissioning Complete', description: 'Commissioning, trial run and handover.', pct: 30, amount: 0, planned: daysFromNow(110), criteria: 'Trial-run certificate', evidenceReq: 'Commissioning certificate', approver: 'Procurement Manager', srnRequired: false },
-];
+const notFound = what => `<div class="page">${pageHead({ title: `${what} not found` })}<div class="empty-state">That record does not exist (the demo data may have been reset).<br><br>${actBtn('go', 'Go to purchase orders', { cls: 'btn-primary', data: { hash: '#/pos' } })}</div></div>`;
+const MS_COLORS = ['#6A5BD2', '#2FA06B', '#E0A030', '#2E7DBA', '#B0285A', '#7B5BA8', '#3E8E95', '#C2583A'];
+const recName = po => isGoods(po) ? 'GRN' : 'SRN';
+const poValueGross = po => { const n = poNet(po); return r2(n + n * gstOf(po) / 100); };
 
 /* ---------------------------------------------------------------- list */
-ROUTES.pos = () => `<div>${pageHead({ title: 'Purchase Orders', crumbs: [['Purchase Orders']], right: gbtn('po.edit', 'po-new', 'Create PO', { cls: 'btn-primary', icn: 'plus' }) })}
-  <div class="content">${listHtml('pos', {
-    pills: { name: 'status', values: ["Draft","Pending Approval","Approved","Rejected"], get: p => p.status },
-    searchPh: 'Search PO number, supplier, line…', defaults: {},
+ROUTES.pos = () => `<div class="page"><h1 class="page-title">Purchase Order</h1>
+  ${listHtml('pos', {
+    noun: 'POs', searchPh: 'Search PO number, vendor, title…', defaults: {},
+    tabs: [['pending', 'Pending', p => !poIsPast(p)], ['past', 'Past', p => poIsPast(p)], ['all', 'All Orders', () => true]],
     filters: [
-      { name: 'status', label: 'Status', options: () => ['Draft', 'Pending Approval', 'Approved', 'Rejected'] },
-      { name: 'method', label: 'Billing method', options: () => ['Standard', 'Progressive', 'Milestone'] },
-      { name: 'supplier', label: 'Supplier', options: () => supOpts() }],
-    rows: () => db.pos.slice().sort((a, b) => b.number.localeCompare(a.number)),
-    match: (p, st) => matchText(st, p.number, getSup(p.supplierId).name, p.lines.map(l => l.desc).join(' ')) && matchIn(st, 'status', p.status) && matchIn(st, 'method', p.billingMethod) && matchIn(st, 'supplier', p.supplierId),
-    cols: ['PO number', 'Supplier', 'Category', 'Billing method', 'PO date', '>PO value', '>Accepted', '>Invoiced', '>Remaining eligible', 'Status', ''],
-    row: p => { const s = poSummary(p); return `<tr class="click" data-act="go" data-hash="#/po/${p.id}"><td class="strong">${esc(p.number)}${p.version > 1 ? ` <span class="badge-s s-gray">v${p.version}</span>` : ''}</td><td>${esc(getSup(p.supplierId).name)}<div class="sub">${esc(getSup(p.supplierId).code)}</div></td><td>${esc(p.category)}</td><td>${poMethodBadge(p)}</td><td class="nowrap">${fmtD(p.poDate)}</td><td class="num">${fmtNum(s.value)}</td><td class="num">${p.status === 'Approved' ? fmtNum(s.accepted) : '—'}</td><td class="num">${p.status === 'Approved' ? fmtNum(s.invoiced) : '—'}</td><td class="num strong">${p.status === 'Approved' ? fmtNum(s.remaining) : '—'}</td><td>${sb(p.status)}</td><td class="act">${icon('chevRight', 12)}</td></tr>`; },
-  })}</div></div>`;
-ACT['po-new'] = () => go('#/po/new');
+      { name: 'method', label: 'Billing', options: () => ['Standard', 'Progressive', 'Milestone'] },
+      { name: 'type', label: 'Type', options: () => ['Goods', 'Services'] },
+      { name: 'supplier', label: 'Vendor', options: () => supOpts() }],
+    above: gbtn('po.edit', 'po-new', 'Create Order', { cls: 'btn-primary', icn: 'plus' }),
+    rows: () => db.pos.slice().sort((a, b) => (b.seqNo || 0) - (a.seqNo || 0)),
+    match: (p, st) => matchText(st, p.number, getSup(p.supplierId).name, p.title, p.lines.map(l => l.desc).join(' ')) && matchIn(st, 'method', p.billingMethod) && matchIn(st, 'type', p.type) && matchIn(st, 'supplier', p.supplierId),
+    cols: ['PO Number', 'Vendor Name', 'Type', 'Category', 'Office', 'Billing', 'Status', 'Created On', 'Submitted By', '>Amount', ''],
+    row: p => { const s = p.status === 'Approved' ? poSummary(p) : null, val = poNet(p);
+      return `<tr class="click" data-act="go" data-hash="#/po/${p.id}"><td class="id strong"><span class="pono">${esc(p.number)}${p.version > 1 ? ` <span class="badge-s s-gray">v${p.version}</span>` : ''}<span class="eye">${icon('eye', 15)}</span></span></td><td class="soft">${esc(getSup(p.supplierId).name)}</td><td>${typeBadge(p)}</td><td class="soft">${esc(p.category)}</td><td class="soft">${esc(officeOf(p.office).name)}</td><td>${poMethodBadge(p)}</td><td>${stagePill(p)}</td><td class="soft">${fmtD(p.poDate)}<br>${fmtT(p.createdAt)}</td><td class="soft">${esc(p.createdBy)}</td>
+      <td class="num soft">${money(val)}${s ? `<div class="mini-bar" style="margin-left:auto"><span style="width:${pct(s.invoiced, val).toFixed(1)}%"></span></div><div class="sub">${fmtNum(pct(s.invoiced, val), 0)}% billed</div>` : ''}</td><td class="act">${viewBtn(`#/po/${p.id}`)}</td></tr>`; },
+  })}</div>`;
+ACT['po-new'] = () => openPoPanel(null);
+ACT['po-edit'] = el => openPoPanel(el.dataset.id);
 
 /* ---------------------------------------------------------------- router */
-ROUTES.po = r => {
-  const id = r.parts[1], sub = r.parts[2];
-  if (id === 'new') return poForm(r, null);
-  const po = getPO(id); if (!po) return notFound('Purchase order');
-  if (sub === 'edit') { if (po.status !== 'Draft') { return poDetail(po, r); } return poForm(r, po); }
-  return poDetail(po, r);
-};
+ROUTES.po = r => { const po = getPO(r.parts[1]); if (!po) return notFound('Purchase order'); return poDetail(po, r); };
 
-/* ---------------------------------------------------------------- create / edit wizard */
-function blankLine(cat) { return { code: '', desc: '', qty: 1, uom: cat === 'Goods' ? 'Units' : 'Lot', price: 0, taxCode: 'VAT5', location: LOCATIONS[0], receiptType: cat === 'Goods' ? 'Goods' : 'Services' }; }
-function poDraftFrom(po) {
-  if (!po) { const d = poDraftBlank(); if (ui.r.q.method === 'Milestone') { d.billingMethod = 'Milestone'; d.milestones = EXAMPLE_SCHEDULE(); } else if (['Standard', 'Progressive'].includes(ui.r.q.method)) d.billingMethod = ui.r.q.method; return d; }
-  return poDraftExisting(po);
-}
-function poDraftBlank() {
-  return { id: null, supplierId: 'sup1', buyer: 'DICE Manufacturing LLC', poDate: todayISO(), deliveryDate: daysFromNow(60), terms: 'Net 30', category: 'Goods', billingMethod: '', progressBasis: 'Receipt', requireSrn: false, partialMilestone: false, overReceiptPct: 0, lines: [blankLine('Goods')], scheduleMode: 'percent', scheduleException: { allow: false, note: '' }, scheduleFinal: false, milestones: [], step: +ui.r.q.step || 1 };
-}
-function poDraftExisting(po) {
-  return { id: po.id, supplierId: po.supplierId, buyer: po.buyer, poDate: po.poDate, deliveryDate: po.deliveryDate, terms: po.terms, category: po.category, billingMethod: po.billingMethod, progressBasis: po.progressBasis, requireSrn: po.requireSrn, partialMilestone: po.partialMilestone, overReceiptPct: po.overReceiptPct || 0,
-    lines: po.lines.map(l => ({ ...l })), scheduleMode: po.scheduleMode || 'percent', scheduleException: { ...(po.scheduleException || { allow: false, note: '' }) }, scheduleFinal: po.scheduleStatus === 'Final', step: +ui.r.q.step || 1, milestones: msOf(po).map(m => ({ ...m })) };
-}
+/* ---------------------------------------------------------------- create / edit drawer */
+const blankLine = () => ({ desc: '', qty: 1, uom: ui.f && ui.f.type === 'Services' ? 'Lot' : 'Units', price: '' });
+const poDraftBlank = () => ({ id: null, supplierId: '', buyer: 'DICE Manufacturing Pvt Ltd', office: OFFICES[0].id, title: '', poDate: todayISO(), deliveryDate: daysFromNow(30), endDate: '', type: 'Goods', category: CATEGORIES[0], gstRate: GST_DEFAULT,
+  billingMethod: 'Standard', progressBasis: 'Receipt', lines: [], milestones: [], attachments: [] });
+const poDraftExisting = po => ({ id: po.id, supplierId: po.supplierId, buyer: po.buyer, office: po.office, title: po.title, poDate: po.poDate, deliveryDate: po.deliveryDate, endDate: po.endDate || '', type: po.type, category: po.category, gstRate: po.gstRate,
+  billingMethod: po.billingMethod, progressBasis: po.progressBasis, lines: po.lines.map(l => ({ ...l })), milestones: msOf(po).map(m => ({ ...m })), attachments: [...(po.attachments || [])] });
 const fVal = f => r2(f.lines.reduce((s, l) => s + (+l.qty || 0) * (+l.price || 0), 0));
-function poForm(r, po) {
-  const key = po ? po.id : 'new';
-  if (!ui.f || ui.fKey !== key) { ui.f = poDraftFrom(po); ui.fKey = key; }
-  const f = ui.f, nextNo = po ? po.number : `PO-2026-${Math.max(1041, ...db.pos.map(p => +p.number.split('-').pop())) + 1}`;
-  const steps = ['PO header', 'Line items', 'Billing configuration', 'Review & approval'];
-  const body = [stepHeader, stepLines, stepBilling, stepReview][f.step - 1](f, nextNo);
-  ui.derive = poDerive;
-  return `<div>${pageHead({ title: po ? `Edit ${po.number}` : 'Create Purchase Order', crumbs: [['Purchase Orders', '#/pos'], [po ? po.number : 'New PO']], right: `<span class="badge-s s-gray">Draft</span>` })}
-  <div class="content">
-    <div class="stepper">${steps.map((s, i) => `<button class="step ${f.step === i + 1 ? 'on' : f.step > i + 1 ? 'done' : ''}" data-act="po-step" data-n="${i + 1}"><span class="n">${f.step > i + 1 ? '✓' : i + 1}</span>${s}</button>`).join('')}</div>
-    <div style="margin-top:14px">${body}</div>
-    <div class="sticky-bar">
-      ${f.step > 1 ? actBtn('po-step', 'Back', { cls: 'btn-outline', data: { n: f.step - 1 } }) : ''}<span class="spacer"></span>
-      ${actBtn('po-save', 'Save as Draft', { cls: 'btn-outline' })}
-      ${f.step < 4 ? actBtn('po-step', 'Next', { cls: 'btn-primary', data: { n: f.step + 1 } }) : actBtn('po-submit', 'Submit for Approval', { cls: 'btn-primary', icn: 'check' })}
-    </div></div></div>`;
+const EXAMPLE_SCHEDULE = f => [
+  { name: 'Design approval', pct: 20, planned: daysFromNow(30), needsReceipt: false },
+  { name: f.type === 'Goods' ? 'Equipment delivered' : 'Works completed', pct: 50, planned: daysFromNow(75), needsReceipt: true },
+  { name: 'Commissioning & handover', pct: 30, planned: daysFromNow(110), needsReceipt: false },
+];
+function openPoPanel(id) {
+  const po = id && getPO(id);
+  openPanel({ key: 'po', title: po ? `Edit ${po.number}` : 'Create PO Order', sub: 'Fill out the details', init: () => po ? poDraftExisting(po) : poDraftBlank(), body: poPanelBody, foot: poPanelFoot, derive: poDerive });
 }
-ACT['po-step'] = el => { ui.f.step = +el.dataset.n; render(); };
-ACT['po-save'] = () => done(A.savePO(ui.f, false), r => { ui.f = null; go(`#/po/${r.id}`); });
-ACT['po-submit'] = () => { const f = ui.f; if (f.billingMethod === 'Milestone' && !f.scheduleFinal && scheduleCheck(f.milestones, fVal(f), f.scheduleMode, f.scheduleException).ok) f.scheduleFinal = true; done(A.savePO(f, true), r => { ui.f = null; go(`#/po/${r.id}`); }); };
-HOOKS.category = (el, v) => { const f = ui.f; f.lines.forEach(l => { l.receiptType = v === 'Goods' ? 'Goods' : 'Services'; if (l.uom === 'Units' && v !== 'Goods') l.uom = 'Lot'; }); f.requireSrn = v !== 'Goods'; f.milestones.forEach(m => m.srnRequired = f.requireSrn); };
-
-function stepHeader(f, nextNo) {
-  return `<div class="card"><h3>PO header</h3><div class="fgrid">
-    <div class="field"><label>PO number</label><div class="ro">${esc(nextNo)} <span class="hint">&nbsp;(auto-generated)</span></div></div>
-    <div class="field"><label>Supplier *</label><select class="input" data-f="supplierId" data-r>${opt(supOpts(), f.supplierId)}</select></div>
-    <div class="field"><label>Buyer entity</label><div class="ro">${esc(f.buyer)}</div></div>
-    <div class="field"><label>PO date *</label><input class="input" type="date" data-f="poDate" value="${esc(f.poDate)}"></div>
-    <div class="field"><label>Delivery date</label><input class="input" type="date" data-f="deliveryDate" value="${esc(f.deliveryDate)}"></div>
-    <div class="field"><label>Currency</label><div class="ro">AED — UAE Dirham</div></div>
-    <div class="field"><label>Payment terms</label><select class="input" data-f="terms" data-r>${opt(TERMS, f.terms)}</select></div>
-    <div class="field"><label>PO category *</label><select class="input" data-f="category" data-hook="category" data-r>${opt(CATEGORIES, f.category)}</select><div class="fhint">Services and Project Services default to requiring an accepted SRN for milestone / certified billing.</div></div>
-    <div class="field"><label>PO value (net, before VAT)</label><div class="ro strong" id="po-val">${money(fVal(f))}</div></div>
-    <div class="field"><label>PO status</label><div class="ro">Draft</div></div>
-  </div></div>`;
+HOOKS.potype = (el, v) => { if (v === 'Goods' && ui.f.progressBasis === 'Certified') ui.f.progressBasis = 'Receipt'; };
+function poPanelBody() {
+  const f = ui.f, off = officeOf(f.office), m = f.billingMethod, goods = f.type === 'Goods';
+  const card = (k, t, d) => `<button type="button" class="opt ${m === k ? 'on' : ''}" data-act="po-method" data-m="${k}"><div class="t"><span class="dot"></span>${t}</div><div class="d">${d}</div></button>`;
+  return `
+  <div class="fgrid">
+    ${F.select('PO Type', 'type', [['Goods', 'Goods'], ['Services', 'Services']], { req: 1, r: 1, hook: 'potype' })}
+    ${F.select('Select Vendor', 'supplierId', supOpts(), { req: 1, blank: 'Select Vendor' })}
+    ${F.text('Enter Order Title', 'title', { req: 1, ph: 'Order Title' })}
+    ${F.select('Select Category', 'category', CATEGORIES.map(c => [c, c]))}
+    ${F.select('Billing Office', 'office', officeOpts(), { r: 1, req: 1 })}
+    ${F.ro('Currency', 'INR — Indian Rupee')}
+    ${F.text('Delivery Date', 'deliveryDate', { type: 'date', req: 1 })}
+    ${F.text('End Date (Optional)', 'endDate', { type: 'date' })}
+    ${F.select('GST', 'gstRate', GST_RATES.map(r => [r, r + '%']))}
+    ${F.ro('Bill Address', `<span style="font-size:12.5px;line-height:1.4;padding:8px 0">${esc(off.address)}<br><span class="muted">GSTIN: ${off.gstin}</span></span>`, { cls: 'span2' })}
+  </div>
+  <div class="sec-h" style="text-transform:none;font-size:13px;font-weight:500;margin-bottom:8px">Line Items<span class="req" style="color:var(--danger)">*</span></div>
+  <table class="li-table"><thead><tr><th>Details</th><th style="width:64px">Qty</th><th style="width:82px">UoM</th><th style="width:100px">Unit Price</th><th style="width:52px">GST</th><th style="width:96px">Total</th><th style="width:52px">Action</th></tr></thead><tbody>
+  ${f.lines.map((l, i) => `<tr>
+    <td><input class="input" data-f="lines.${i}.desc" value="${esc(l.desc)}" placeholder="${goods ? 'Item description' : 'Service description'}"></td>
+    <td><input class="input num" type="number" min="0" step="any" data-t="num" data-f="lines.${i}.qty" value="${l.qty}"></td>
+    <td><select class="input" data-f="lines.${i}.uom">${opt(UOMS, l.uom)}</select></td>
+    <td><input class="input num" type="number" min="0" step="any" data-t="num" data-f="lines.${i}.price" value="${l.price}" placeholder="0.00"></td>
+    <td class="muted" style="text-align:center">${f.gstRate}%</td>
+    <td class="num strong" id="li-amt-${i}"></td>
+    <td style="text-align:center"><button type="button" class="icon-btn danger" data-act="ln-del" data-i="${i}" title="Remove line">${icon('trash', 15)}</button></td></tr>`).join('') || '<tr><td class="empty" colspan="7">No Line Items Added</td></tr>'}</tbody></table>
+  <div class="li-actions"><button type="button" class="btn btn-green btn-sm" data-act="ln-add">${icon('plus', 13, 2.2)}Add Line Item</button><button type="button" class="stub-btn" data-act="stub" data-name="Bulk Upload">${icon('upload', 14)}Bulk Upload</button></div>
+  <div class="li-total" id="li-total"></div>
+  <div class="sec-h">Billing method</div>
+  <div class="seg-cards">
+    ${card('Standard', 'Standard', `Invoice against accepted ${goods ? 'GRN' : 'SRN'} value at PO level.`)}
+    ${card('Progressive', 'Progressive', 'Many invoices over time, each against accepted work.')}
+    ${card('Milestone', 'Milestone', 'Invoices follow a fixed schedule of milestones.')}
+  </div>
+  ${m === 'Progressive' ? `<div class="field" style="margin-top:14px"><label>Progress is measured by</label><div class="seg-cards" style="grid-template-columns:1fr 1fr">
+    <button type="button" class="opt ${f.progressBasis !== 'Certified' ? 'on' : ''}" data-act="po-basis" data-b="Receipt"><div class="t"><span class="dot"></span>Accepted ${goods ? 'GRNs' : 'SRNs'}</div><div class="d">Each accepted receipt becomes invoice-eligible.</div></button>
+    <button type="button" class="opt ${f.progressBasis === 'Certified' ? 'on' : ''}" data-act="po-basis" data-b="Certified" ${goods ? 'disabled title="Certified work progress is only available for Services POs"' : ''}><div class="t"><span class="dot"></span>Certified work progress</div><div class="d">${goods ? 'Services POs only.' : 'Vendor claims cumulative progress; buyer certifies.'}</div></button></div></div>` : ''}
+  ${m === 'Milestone' ? msEditor(f) : ''}
+  <div class="sec-h" style="text-transform:none;font-size:14px;font-weight:700">Additional Attachment</div>${attachBox('attachments', f.attachments)}`;
 }
-function stepLines(f) {
-  return `<div class="card pad0"><div style="padding:14px 14px 4px;display:flex;align-items:center"><h3 style="margin:0">Line items</h3><span class="spacer"></span>${actBtn('ln-add', 'Add line', { icn: 'plus' })}</div>
-  <div class="table-wrap"><table class="grid compact" style="min-width:1100px"><thead><tr><th>#</th><th>Item / service description *</th><th>Code</th><th>Receipt type</th><th>Qty *</th><th>UoM</th><th>Unit price (AED) *</th><th class="right">Net line value</th><th>Tax code</th><th>Delivery location</th><th></th></tr></thead><tbody>
-  ${f.lines.map((l, i) => `<tr><td>${i + 1}</td>
-    <td><input class="input sm" style="min-width:220px" data-f="lines.${i}.desc" value="${esc(l.desc)}" placeholder="e.g. Industrial Machinery Installation"></td>
-    <td><input class="input sm" style="width:110px" data-f="lines.${i}.code" value="${esc(l.code)}"></td>
-    <td><select class="input sm" data-f="lines.${i}.receiptType" data-r>${opt(['Goods', 'Services'], l.receiptType)}</select></td>
-    <td><input class="input sm num" style="width:80px" type="number" min="0" step="any" data-t="num" data-f="lines.${i}.qty" value="${l.qty}"></td>
-    <td><select class="input sm" data-f="lines.${i}.uom">${opt(UOMS, l.uom)}</select></td>
-    <td><input class="input sm num" style="width:110px" type="number" min="0" step="any" data-t="num" data-f="lines.${i}.price" value="${l.price}"></td>
-    <td class="num strong" id="ln-net-${i}">${fmtNum(r2((+l.qty || 0) * (+l.price || 0)))}</td>
-    <td><select class="input sm" data-f="lines.${i}.taxCode"><option>VAT5</option></select></td>
-    <td><select class="input sm" style="min-width:190px" data-f="lines.${i}.location">${opt(LOCATIONS, l.location)}</select></td>
-    <td>${f.lines.length > 1 ? `<button class="kebab" data-act="ln-del" data-i="${i}" title="Remove line">${icon('trash', 12)}</button>` : ''}</td></tr>`).join('')}
-  <tr class="total"><td colspan="7" class="right">Total PO value (net)</td><td class="num" id="ln-total">${fmtNum(fVal(f))}</td><td colspan="3"></td></tr></tbody></table></div></div>
-  <p class="hint" style="margin-top:8px">Line value = quantity × unit price. VAT (5%) is calculated on invoices, not on the PO value.</p>`;
+function msEditor(f) {
+  const lbl = f.type === 'Goods' ? 'GRN' : 'SRN';
+  return `<div class="sec-h" style="text-transform:none;font-size:13px;font-weight:500;margin-bottom:8px">Milestone Schedule<span class="req" style="color:var(--danger)">*</span></div>
+  <div id="ms-bar"></div>
+  <table class="li-table"><thead><tr><th style="width:46px">ID</th><th>Milestone</th><th style="width:68px">% of PO</th><th style="width:110px">Amount</th><th style="width:134px">Due Date</th><th style="width:74px" title="The milestone can be invoiced only after an accepted ${lbl} is linked">Needs ${lbl}</th><th style="width:52px">Action</th></tr></thead><tbody>
+  ${f.milestones.map((m, i) => `<tr>
+    <td><span class="ms-chip" style="background:${MS_COLORS[i % MS_COLORS.length]}">M${i + 1}</span></td>
+    <td><input class="input" data-f="milestones.${i}.name" value="${esc(m.name || '')}" placeholder="Milestone name"></td>
+    <td><input class="input num" type="number" min="0" step="any" data-t="num" data-f="milestones.${i}.pct" value="${m.pct ?? ''}" placeholder="%"></td>
+    <td class="num strong" id="ms-amt-${i}"></td>
+    <td><input class="input" type="date" data-f="milestones.${i}.planned" value="${esc(m.planned || '')}"></td>
+    <td style="text-align:center"><input type="checkbox" style="accent-color:var(--primary);width:17px;height:17px" data-f="milestones.${i}.needsReceipt" ${m.needsReceipt ? 'checked' : ''}></td>
+    <td style="text-align:center"><button type="button" class="icon-btn danger" data-act="ms-del" data-i="${i}" title="Remove milestone">${icon('trash', 15)}</button></td></tr>`).join('') || '<tr><td class="empty" colspan="7">No Milestones Added</td></tr>'}</tbody></table>
+  <div class="li-actions"><button type="button" class="btn btn-green btn-sm" data-act="ms-add">${icon('plus', 13, 2.2)}Add Milestone</button>${f.milestones.length ? '' : `<button type="button" class="stub-btn" data-act="ms-example">Load 20 / 50 / 30 example</button>`}</div>
+  <div id="ms-sum"></div>`;
 }
-ACT['ln-add'] = () => { ui.f.lines.push(blankLine(ui.f.category)); render(); };
-ACT['ln-del'] = el => { ui.f.lines.splice(+el.dataset.i, 1); render(); };
-
-function stepBilling(f) {
-  const m = f.billingMethod;
-  const card = (k, t, d, bullets) => `<button class="rcard ${m === k ? 'on' : ''}" data-act="po-method" data-m="${k}"><div class="t"><span class="dot"></span>${t} ${mb(k)}</div><div class="d">${d}</div><ul>${bullets.map(b => `<li>${b}</li>`).join('')}</ul></button>`;
-  return `<div class="card"><h3>Billing method <span class="bad-t">*</span></h3>
-    ${!m ? alertBox('warn', 'Billing method is required', 'Select how this PO will be invoiced. It is inherited by every invoice and cannot be changed by the supplier.') : ''}
-    <div class="radio-cards">
-      ${card('Standard', 'Standard Billing', 'The existing receipt-based invoice flow.', ['Invoice matched against eligible GRNs/SRNs per the configured DICE process', 'No additional billing schedule'])}
-      ${card('Progressive', 'Progressive Billing', 'Multiple invoices against eligible portions of the PO.', ['Eligibility from accepted GRN/SRN quantities &amp; values (default)', 'Or from separately certified work progress', 'Cumulative billed &amp; remaining eligible amounts tracked'])}
-      ${card('Milestone', 'Milestone Billing', 'Invoices follow an approved contractual milestone schedule.', ['Schedule builder (add / edit / reorder before finalization)', 'Each milestone needs acceptance before it is billable', 'Optional accepted-SRN gate'])}
-    </div></div>
-    ${m === 'Standard' ? `<div class="method-banner standard"><div class="ic">${icon('doc', 14)}</div><div><b>Standard billing</b> — existing behaviour is unchanged. Invoices are matched against accepted receipts; no billing schedule or progress configuration applies.</div></div>` : ''}
-    ${m === 'Progressive' ? progressiveConfig(f) : ''}
-    ${m === 'Milestone' ? milestoneConfig(f) : ''}`;
-}
-ACT['po-method'] = el => { const f = ui.f; f.billingMethod = el.dataset.m; if (f.billingMethod === 'Milestone') { if (!f.milestones.length) { f.milestones = EXAMPLE_SCHEDULE().map(x => ({ ...x, srnRequired: f.requireSrn })); f.scheduleMode = 'percent'; f.scheduleFinal = false; } } render(); };
-function progressiveConfig(f) {
-  return `<div class="method-banner progressive"><div class="ic">${icon('layers', 14)}</div><div><b>Progressive billing</b> — invoice eligibility is derived from <b>accepted receipt quantities/values</b> (or separately certified work progress). It reuses the existing GRN/SRN → invoice flow; no duplicate receipts are created.</div></div>
-  <div class="card" style="margin-top:12px"><h3>Progress measurement basis</h3>
-    <div class="radio-cards" style="grid-template-columns:1fr 1fr">
-      <button class="rcard ${f.progressBasis === 'Receipt' ? 'on' : ''}" data-act="po-basis" data-b="Receipt"><div class="t"><span class="dot"></span>Accepted GRN/SRN quantities and values <span class="badge-s s-green">Default</span></div><div class="d">Each accepted receipt becomes invoice-eligible. Pending-inspection and rejected quantities never qualify.</div></button>
-      <button class="rcard ${f.progressBasis === 'Certified' ? 'on' : ''}" data-act="po-basis" data-b="Certified"><div class="t"><span class="dot"></span>Certified work progress</div><div class="d">A separate progress claim (cumulative − previously certified) must be submitted and certified before value becomes invoice-eligible. Not mixed with receipt-based billing.</div></button>
-    </div>
-    <div class="fgrid" style="margin-top:12px">
-      ${f.progressBasis === 'Receipt' ? `<div class="field"><label>Over-receipt tolerance (%)</label><input class="input" type="number" min="0" max="20" step="any" data-t="num" data-f="overReceiptPct" value="${f.overReceiptPct}"><div class="fhint">0 = received quantity cannot exceed the PO quantity.</div></div>` : ''}
-      ${f.progressBasis === 'Certified' ? `<div class="field span2"><label class="check-row"><input type="checkbox" data-f="requireSrn" data-r ${f.requireSrn ? 'checked' : ''}> Require an accepted SRN before certified value is invoice-eligible</label><div class="fhint">Applies the configured acceptance gate for service categories.</div></div>` : ''}
-    </div></div>`;
-}
-ACT['po-basis'] = el => { ui.f.progressBasis = el.dataset.b; render(); };
-
-const MS_COLORS = ['#6C5DD3', '#3FA36B', '#E0A030', '#2E7DBA', '#B0285A', '#7B5BA8', '#3E8E95', '#C2583A'];
-function msRemaining(f) {
-  const v = fVal(f);
-  return f.scheduleMode === 'percent' ? r2(100 - f.milestones.reduce((s, m) => s + (+m.pct || 0), 0)) : r2(v - f.milestones.reduce((s, m) => s + (+m.amount || 0), 0));
-}
-function milestoneConfig(f) {
-  const val = fVal(f), chk = scheduleCheck(f.milestones, val, f.scheduleMode, f.scheduleException), lock = f.scheduleFinal, dis = lock ? 'disabled' : '';
-  const cards = f.milestones.map((m, i) => `<div class="ms-card ${lock ? 'locked' : ''}">
-    <div class="ms-head"><span class="ms-id" style="background:${MS_COLORS[i % MS_COLORS.length]}">M${i + 1}</span>
-      <input class="input ms-name" ${dis} data-f="milestones.${i}.name" value="${esc(m.name)}" placeholder="Milestone name, e.g. Design approval">
-      <div class="ms-val">${f.scheduleMode === 'percent'
-        ? `<input class="input num" type="number" step="any" min="0" ${dis} data-t="num" data-f="milestones.${i}.pct" value="${m.pct}"><span class="ms-unit">%</span>`
-        : `<span class="ms-unit">AED</span><input class="input num" style="width:120px" type="number" step="any" min="0" ${dis} data-t="num" data-f="milestones.${i}.amount" value="${m.amount}">`}</div>
-      <div class="ms-calc"><b id="ms-amt-${i}">${money(chk.amt(m))}</b><span id="ms-pct-${i}">${val ? fmtNum(r2(chk.amt(m) / val * 100)) : 0}% of PO</span></div>
-      <div class="ms-actions">${lock ? `<span class="lock">${icon('lock', 12)}</span>` : `<button class="kebab" data-act="ms-up" data-i="${i}" ${i === 0 ? 'disabled' : ''} title="Move up">${icon('up', 12)}</button><button class="kebab" data-act="ms-down" data-i="${i}" ${i === f.milestones.length - 1 ? 'disabled' : ''} title="Move down">${icon('down', 12)}</button><button class="kebab" data-act="ms-del" data-i="${i}" title="Remove milestone">${icon('trash', 12)}</button>`}</div></div>
-    <div class="ms-body">
-      <div class="field"><label>Planned completion</label><input class="input sm" type="date" ${dis} data-f="milestones.${i}.planned" value="${esc(m.planned || '')}"></div>
-      <div class="field"><label>Approver</label><select class="input sm" ${dis} data-f="milestones.${i}.approver">${opt(APPROVERS_LIST, m.approver)}</select></div>
-      <div class="field"><label>Accepted SRN required?</label><label class="check-row"><input type="checkbox" ${dis} data-f="milestones.${i}.srnRequired" ${m.srnRequired ? 'checked' : ''}> Yes, gate invoicing on an SRN</label></div>
-      <div class="field"><label>Status</label><div class="ro">Draft — locked until PO approval</div></div>
-      <div class="field span2"><label>Description</label><input class="input sm" ${dis} data-f="milestones.${i}.description" value="${esc(m.description || '')}" placeholder="What is delivered?"></div>
-      <div class="field"><label>Acceptance criteria</label><input class="input sm" ${dis} data-f="milestones.${i}.criteria" value="${esc(m.criteria || '')}" placeholder="How is it accepted?"></div>
-      <div class="field"><label>Required supporting evidence</label><input class="input sm" ${dis} data-f="milestones.${i}.evidenceReq" value="${esc(m.evidenceReq || '')}" placeholder="Certificates, reports…"></div>
-    </div></div>`).join('');
-  return `<div class="method-banner milestone"><div class="ic">${icon('flag', 14)}</div><div><b>Milestone billing</b> — invoice eligibility comes from the <b>amount allocated to an approved contractual milestone</b>. A milestone is never billable just because its planned date passed.</div></div>
-  <div class="card" style="margin-top:12px">
-    <div class="row" style="margin-bottom:10px"><h3 style="margin:0">Milestone schedule</h3>${lock ? `<span class="badge-s s-green">${icon('lock', 10)}&nbsp;Finalized</span>` : '<span class="badge-s s-amber">Draft</span>'}<span class="spacer"></span>
-      <div class="seg"><button class="${f.scheduleMode === 'percent' ? 'on' : ''}" ${dis} data-act="ms-mode" data-m="percent">% of PO value</button><button class="${f.scheduleMode === 'fixed' ? 'on' : ''}" ${dis} data-act="ms-mode" data-m="fixed">Fixed amounts</button></div></div>
-    <div id="sch-bar">${scheduleBar(f)}</div>
-    <div class="ms-list">${cards || '<div class="empty-state">No milestones yet — add one or load the example schedule.</div>'}</div>
-    <div class="row" style="margin-top:12px">${lock
-      ? `${actBtn('ms-unlock', 'Unlock to edit', { icn: 'lock' })}<span class="hint">The schedule is finalized. Unlock to make changes before the PO is approved.</span>`
-      : `${actBtn('ms-add', 'Add milestone', { icn: 'plus', cls: 'btn-outline' })}${actBtn('ms-even', 'Split evenly')}${actBtn('ms-balance', 'Balance last milestone to total')}${actBtn('ms-example', 'Load example 20 / 50 / 30')}<span class="spacer"></span>${actBtn('ms-finalize', 'Finalize schedule', { cls: 'btn-primary', icn: 'lock' })}`}</div>
-    <div id="sch-sum" style="margin-top:12px">${scheduleSummary(f)}</div></div>
-  <div class="card" style="margin-top:12px"><h3>Billing rules</h3><div class="fgrid c2">
-    <div class="field"><label class="check-row"><input type="checkbox" data-f="requireSrn" data-r data-hook="reqsrn" ${f.requireSrn ? 'checked' : ''}> Require an accepted SRN before milestones are invoice-eligible</label><div class="fhint">Applies to every milestone (overridable per milestone above). The milestone and the SRN stay separate records; accepting one never approves the other.</div></div>
-    <div class="field"><label class="check-row"><input type="checkbox" data-f="partialMilestone" data-r ${f.partialMilestone ? 'checked' : ''}> Allow partial milestone billing</label><div class="fhint">Off (default): one invoice per milestone, for its full amount.</div></div>
-    ${f.scheduleMode === 'fixed' ? `<div class="field span2"><label class="check-row"><input type="checkbox" data-f="scheduleException.allow" data-r ${f.scheduleException.allow ? 'checked' : ''}> Exception: allow the fixed schedule to total less than the PO value</label>${f.scheduleException.allow ? `<input class="input" style="margin-top:6px" data-f="scheduleException.note" placeholder="Reason for the exception (required)" value="${esc(f.scheduleException.note)}">` : ''}</div>` : ''}
-  </div></div>`;
-}
-function scheduleBar(f) {
-  const val = fVal(f), chk = scheduleCheck(f.milestones, val, f.scheduleMode, f.scheduleException);
-  const segs = f.milestones.map((m, i) => { const p = val ? chk.amt(m) / val * 100 : 0; return `<span title="M${i + 1} · ${fmtNum(r2(p))}%" style="width:${Math.max(0, Math.min(100, p)).toFixed(2)}%;background:${MS_COLORS[i % MS_COLORS.length]}">${p >= 9 ? `M${i + 1} · ${fmtNum(r2(p))}%` : ''}</span>`; }).join('');
-  const total = val ? chk.total / val * 100 : 0;
-  return `<div class="alloc-bar ${total > 100.0001 ? 'over' : ''}">${segs}</div><div class="alloc-meta"><span>${money(chk.total)} of ${money(val)} allocated</span><span class="${Math.abs(total - 100) < 0.0001 ? 'ok-t' : total > 100 ? 'bad-t' : 'warn-t'}">${fmtNum(r2(total))}%${total < 99.9999 ? ` · ${fmtNum(r2(100 - total))}% unallocated` : total > 100.0001 ? ` · ${fmtNum(r2(total - 100))}% over` : ' · fully allocated'}</span></div>`;
-}
-function scheduleSummary(f) {
-  const val = fVal(f), chk = scheduleCheck(f.milestones, val, f.scheduleMode, f.scheduleException);
-  return chk.ok ? alertBox('ok', f.scheduleFinal ? 'Schedule finalized' : 'Schedule is valid', f.scheduleFinal ? 'Locked. It will be sent for approval with the PO.' : 'Totals match the PO value. It will be finalized automatically when you submit the PO.')
-    : alertBox('err', 'Fix before finalizing', errList(chk.errors));
-}
-ACT['ms-add'] = () => { const f = ui.f, rem = Math.max(0, msRemaining(f)); f.milestones.push({ name: '', description: '', pct: f.scheduleMode === 'percent' ? rem : 0, amount: f.scheduleMode === 'fixed' ? rem : 0, planned: '', criteria: '', evidenceReq: '', approver: 'Procurement Manager', srnRequired: f.requireSrn }); render(); };
-ACT['ms-even'] = () => {
-  const f = ui.f, n = f.milestones.length; if (!n) return toast('Add milestones first', 'err');
-  const total = f.scheduleMode === 'percent' ? 100 : fVal(f), each = r2(total / n); let used = 0;
-  f.milestones.forEach((m, i) => { const v = i === n - 1 ? r2(total - used) : each; used = r2(used + v); if (f.scheduleMode === 'percent') m.pct = v; else m.amount = v; });
-  render();
-};
-ACT['ms-balance'] = () => {
-  const f = ui.f, n = f.milestones.length; if (!n) return toast('Add milestones first', 'err');
-  const last = f.milestones[n - 1], others = f.milestones.slice(0, -1);
-  if (f.scheduleMode === 'percent') last.pct = r2(100 - others.reduce((s, m) => s + (+m.pct || 0), 0)); else last.amount = r2(fVal(f) - others.reduce((s, m) => s + (+m.amount || 0), 0));
-  render();
-};
-
-HOOKS.reqsrn = (el, v) => { ui.f.milestones.forEach(m => m.srnRequired = v); };
-ACT['ms-del'] = el => { ui.f.milestones.splice(+el.dataset.i, 1); render(); };
-ACT['ms-up'] = el => { const a = ui.f.milestones, i = +el.dataset.i; [a[i - 1], a[i]] = [a[i], a[i - 1]]; render(); };
-ACT['ms-down'] = el => { const a = ui.f.milestones, i = +el.dataset.i; [a[i + 1], a[i]] = [a[i], a[i + 1]]; render(); };
-ACT['ms-example'] = () => { ui.f.scheduleMode = 'percent'; ui.f.milestones = EXAMPLE_SCHEDULE().map(x => ({ ...x, srnRequired: ui.f.requireSrn })); render(); };
-ACT['ms-mode'] = el => { const f = ui.f, v = fVal(f), to = el.dataset.m; if (f.scheduleMode === to) return; f.milestones.forEach(m => { if (to === 'fixed') m.amount = r2((+m.pct || 0) * v / 100); else m.pct = v ? r2((+m.amount || 0) / v * 100) : 0; }); f.scheduleMode = to; render(); };
-ACT['ms-finalize'] = () => { const f = ui.f, chk = scheduleCheck(f.milestones, fVal(f), f.scheduleMode, f.scheduleException); if (!chk.ok) return errorModal('Schedule cannot be finalized', chk.errors); f.scheduleFinal = true; toast('Milestone schedule finalized — locked until the PO is amended'); render(); };
-ACT['ms-unlock'] = () => { ui.f.scheduleFinal = false; render(); };
-
-function stepReview(f, nextNo) {
-  const v = fVal(f), errs = validatePO({ ...f, scheduleFinal: true }, true), sup = getSup(f.supplierId);
-  return `<div class="card"><h3>Review ${esc(nextNo)}</h3><div class="kvg">${kv('Supplier', esc(sup.name) + ` <span class="hint">${sup.code}</span>`)}${kv('Buyer entity', esc(f.buyer))}${kv('Category', esc(f.category))}${kv('PO date', fmtD(f.poDate))}${kv('Delivery date', fmtD(f.deliveryDate))}${kv('Payment terms', esc(f.terms))}${kv('PO value (net)', `<b>${money(v)}</b>`)}${kv('Billing method', f.billingMethod ? mb(f.billingMethod) + (f.billingMethod === 'Progressive' ? ` <span class="hint">${f.progressBasis === 'Certified' ? 'Certified work progress' : 'Accepted receipts'}</span>` : '') : '<span class="bad-t">Not selected</span>')}${kv('Lines', f.lines.length)}</div></div>
-  ${f.billingMethod === 'Milestone' ? `<div class="card" style="margin-top:12px"><h3>Milestone schedule ${f.scheduleFinal ? '<span class="badge-s s-green">Finalized</span>' : '<span class="badge-s s-amber">Finalized automatically on submit</span>'}</h3><table class="grid compact"><thead><tr><th>ID</th><th>Name</th><th class="right">Amount</th><th class="right">%</th><th>Planned</th><th>SRN gate</th></tr></thead><tbody>${f.milestones.map((m, i) => `<tr><td class="strong">M${i + 1}</td><td>${esc(m.name)}</td><td class="num">${fmtNum(scheduleCheck(f.milestones, v, f.scheduleMode, f.scheduleException).amt(m))}</td><td class="num">${v ? fmtNum(r2(scheduleCheck(f.milestones, v, f.scheduleMode).amt(m) / v * 100)) : 0}%</td><td>${fmtD(m.planned)}</td><td>${m.srnRequired ? 'Accepted SRN required' : '—'}</td></tr>`).join('')}</tbody></table></div>` : ''}
-  ${errs.length ? alertBox('err', 'Resolve before submitting for approval', errList(errs)) : alertBox('ok', 'Ready to submit', 'All required fields are valid. Only approved POs become available for GRN, SRN and invoice selection.')}`;
-}
+function poPanelFoot() { return `<button class="btn btn-ghost" data-act="po-save">Save as Draft</button><button class="btn btn-dark" data-act="po-submit">Create Order</button>`; }
 function poDerive() {
   const f = ui.f; if (!f) return;
-  const v = $('#po-val'); if (v) v.textContent = money(fVal(f));
-  f.lines.forEach((l, i) => { const e = $('#ln-net-' + i); if (e) e.textContent = fmtNum(r2((+l.qty || 0) * (+l.price || 0))); });
-  const t = $('#ln-total'); if (t) t.textContent = fmtNum(fVal(f));
-  if (f.billingMethod === 'Milestone' && f.step === 3) {
-    const chk = scheduleCheck(f.milestones, fVal(f), f.scheduleMode, f.scheduleException);
-    const vv = fVal(f); f.milestones.forEach((m, i) => { const e = $('#ms-amt-' + i); if (e) e.textContent = money(chk.amt(m)); const p = $('#ms-pct-' + i); if (p) p.textContent = (vv ? fmtNum(r2(chk.amt(m) / vv * 100)) : 0) + '% of PO'; }); const bar = $('#sch-bar'); if (bar) bar.innerHTML = scheduleBar(f);
-    const s = $('#sch-sum'); if (s) s.innerHTML = scheduleSummary(f);
+  const v = fVal(f), gst = r2(v * (+f.gstRate || 0) / 100);
+  f.lines.forEach((l, i) => { const e = $('#li-amt-' + i); if (e) e.textContent = fmtNum(r2((+l.qty || 0) * (+l.price || 0) * (1 + (+f.gstRate || 0) / 100))); });
+  const t = $('#li-total'); if (t) t.innerHTML = `<span>Base amount <b>${money(v)}</b></span><span>GST ${f.gstRate}% <b>${money(gst)}</b></span><span>Total <b>${money(r2(v + gst))}</b></span>`;
+  if (f.billingMethod === 'Milestone') {
+    const chk = scheduleCheck(f.milestones, v), amts = chk.ok ? chk.amounts : f.milestones.map(m => r2((+m.pct || 0) * v / 100));
+    f.milestones.forEach((m, i) => { const e = $('#ms-amt-' + i); if (e) e.innerHTML = `${fmtNum(amts[i] || 0)}`; });
+    const tot = chk.pctTotal, segs = f.milestones.map((m, i) => `<span title="M${i + 1}" style="width:${Math.max(0, Math.min(100, +m.pct || 0)).toFixed(2)}%;background:${MS_COLORS[i % MS_COLORS.length]}">${(+m.pct || 0) >= 9 ? `M${i + 1} · ${fmtNum(+m.pct)}%` : ''}</span>`).join('');
+    const bar = $('#ms-bar'); if (bar) bar.innerHTML = `<div class="alloc-bar ${tot > 100.0001 ? 'over' : ''}">${segs}</div><div class="alloc-meta"><span>${fmtNum(tot)}% of ${money(v)} allocated</span><span class="${Math.abs(tot - 100) < 0.0001 ? 'ok-t' : tot > 100 ? 'bad-t' : 'warn-t'}">${Math.abs(tot - 100) < 0.0001 ? 'fully allocated' : tot > 100 ? `${fmtNum(r2(tot - 100))}% over` : `${fmtNum(r2(100 - tot))}% unallocated`}</span></div>`;
+    const s = $('#ms-sum'); if (s) s.innerHTML = f.milestones.length && !chk.ok ? alertBox('warn', 'The schedule is not valid yet', errList(chk.errors)) : '';
   }
 }
+ACT['ln-add'] = () => { ui.f.lines.push(blankLine()); render(); };
+ACT['ln-del'] = el => { ui.f.lines.splice(+el.dataset.i, 1); render(); };
+ACT['po-method'] = el => { const f = ui.f; f.billingMethod = el.dataset.m; if (f.billingMethod === 'Milestone' && !f.milestones.length) f.milestones = EXAMPLE_SCHEDULE(f); render(); };
+ACT['po-basis'] = el => { ui.f.progressBasis = el.dataset.b; render(); };
+ACT['ms-add'] = () => { const f = ui.f, rem = Math.max(0, r2(100 - f.milestones.reduce((s, m) => s + (+m.pct || 0), 0))); f.milestones.push({ name: '', pct: rem || '', planned: '', needsReceipt: false }); render(); };
+ACT['ms-del'] = el => { ui.f.milestones.splice(+el.dataset.i, 1); render(); };
+ACT['ms-example'] = () => { ui.f.milestones = EXAMPLE_SCHEDULE(ui.f); render(); };
+ACT['po-save'] = () => done(A.savePO(ui.f, false), r => { closePanel(); go(`#/po/${r.id}`); });
+ACT['po-submit'] = () => done(A.savePO(ui.f, true), r => { closePanel(); go(`#/po/${r.id}`); });
 
 /* ---------------------------------------------------------------- detail */
-const PO_TABS = (po) => [['overview', 'Overview'], ['lines', 'Line Items', po.lines.length], ['billing', 'Billing Schedule'], ['receipts', 'Receipts', grnsOf(po).length + srnsOf(po).length], ['invoices', 'Invoices', invsOf(po).length], ['audit', 'Approvals & Audit Trail']];
+function billTabName(po) { return po.billingMethod === 'Milestone' ? 'Milestones' : poCertified(po) ? 'Progress Claims' : 'Billing'; }
 function poDetail(po, r) {
-  const tab = r.q.tab || 'overview', s = poSummary(po);
-  const banner = { Draft: ['gray', 'Draft', 'Not yet submitted. Receipts and invoices cannot be created until the PO is approved.'], 'Pending Approval': ['amber', 'Pending approval', 'Awaiting Procurement Manager approval.'], Approved: ['green', 'Approved', 'Available for GRN, SRN and invoice selection.'], Rejected: ['red', 'Rejected', 'Returned to the buyer — revise and resubmit.'] }[po.status] || ['gray', po.status, ''];
-  const goods = po.lines.some(l => l.receiptType === 'Goods'), svc = po.lines.some(l => l.receiptType === 'Services');
+  const tab = r.q.tab || 'overview', s = poSummary(po), st = poStage(po);
   const actions = [];
-  if (po.status === 'Draft') actions.push(gbtn('po.edit', 'go', 'Edit', { data: { hash: `#/po/${po.id}/edit` }, icn: 'edit' }), gbtn('po.edit', 'po-submit-draft', 'Submit for Approval', { cls: 'btn-primary', data: { id: po.id }, icn: 'check' }));
-  if (po.status === 'Pending Approval') actions.push(gbtn('po.approve', 'po-reject', 'Reject', { cls: 'btn-danger-soft', data: { id: po.id } }), gbtn('po.approve', 'po-approve', 'Approve', { cls: 'btn-primary', data: { id: po.id }, icn: 'check' }), gbtn('po.edit', 'po-reopen', 'Return to draft', { data: { id: po.id } }));
+  if (po.status === 'Draft') actions.push(gbtn('po.edit', 'po-edit', 'Edit', { data: { id: po.id }, icn: 'edit', cls: 'btn-outline' }), gbtn('po.edit', 'po-submit-draft', 'Submit for Approval', { cls: 'btn-primary', data: { id: po.id }, icn: 'check' }));
+  if (po.status === 'Pending Approval') actions.push(gbtn('po.edit', 'po-reopen', 'Return to draft', { data: { id: po.id }, cls: 'btn-ghost' }), gbtn('po.approve', 'po-reject', 'Reject', { cls: 'btn-danger', data: { id: po.id } }), gbtn('po.approve', 'po-approve', 'Approve', { cls: 'btn-primary', data: { id: po.id }, icn: 'check' }));
   if (po.status === 'Rejected') actions.push(gbtn('po.edit', 'po-reopen', 'Revise PO', { cls: 'btn-primary', data: { id: po.id }, icn: 'edit' }));
-  if (po.status === 'Approved') {
-    if (goods) actions.push(gbtn('grn.create', 'go', 'Create GRN', { data: { hash: `#/grn/new?po=${po.id}` }, icn: 'box' }));
-    if (svc) actions.push(gbtn('srn.create', 'go', 'Create SRN', { data: { hash: `#/srn/new?po=${po.id}` }, icn: 'truck' }));
-    actions.push(gbtn('inv.create', 'go', 'Create Invoice', { cls: 'btn-primary', data: { hash: `#/invoice/new?po=${po.id}` }, icn: 'receipt' }), gbtn('po.amend', 'po-amend', 'Amend PO', { data: { id: po.id }, icn: 'edit' }));
-  }
-  const body = { overview: poOverview, lines: poLinesTab, billing: poBillingTab, receipts: poReceiptsTab, invoices: poInvoicesTab, audit: poAuditTab }[tab] || poOverview;
-  return `<div>${pageHead({ title: po.number, sub: `${poMethodBadge(po)}`, crumbs: [['Purchase Orders', '#/pos'], [po.number]], right: actions.join('') })}
-  <div class="content">
-    <div class="status-banner ${banner[0]}"><div><div class="t">${banner[1]}${po.version > 1 ? ` · version ${po.version}` : ''}</div><div class="d">${banner[2]}</div></div><span class="spacer"></span><div class="hint">${esc(getSup(po.supplierId).name)} · ${money(s.value)} · ${esc(po.terms)}</div></div>
-    ${tabsHtml(PO_TABS(po), tab, `#/po/${po.id}`)}
-    <div style="margin-top:6px">${body(po, s)}</div></div></div>`;
+  if (po.status === 'Approved') actions.push(gbtn('po.amend', 'po-amend', 'Amend PO', { data: { id: po.id }, icn: 'edit', cls: 'btn-outline' }));
+  actions.push(actBtn('po-view', 'View Purchase Order', { cls: 'btn-primary', data: { id: po.id } }));
+  const nRec = isGoods(po) ? grnsOf(po).length : srnsOf(po).length;
+  const tabs = [['overview', 'Overview'], ['lines', 'Line Items', po.lines.length], ['billing', billTabName(po), po.billingMethod === 'Milestone' ? msOf(po).length : poCertified(po) ? claimsOf(po).length : null], ['receipts', isGoods(po) ? 'GRN' : 'SRN', nRec], ['invoices', 'Invoices', invsOf(po).length], ['history', 'History']];
+  const body = { overview: poOverview, lines: poLinesTab, billing: poBillingTab, receipts: poReceiptsTab, invoices: poInvoicesTab, history: poHistoryTab }[tab] || poOverview;
+  const dots = st.steps.map((_, i) => `<i class="${st.reached[i] ? 'on' : ''} ${i === st.cur && !st.complete ? 'cur' : ''}">${st.reached[i] ? icon('check', 8, 4) : ''}</i>`).join('');
+  return `<div class="page">${pageHead({ title: po.number, tags: `${poMethodBadge(po)} ${typeBadge(po)}`, right: actions.join('') })}
+  <div class="stage ${st.tone === 'green' ? '' : st.tone}"><div class="ico">${icon(isGoods(po) ? 'box' : 'truck', 24, 1.8)}</div>
+    <div class="grow"><div class="t">${esc(st.label)}</div><div class="chips"><span class="chip">Stage ${Math.min(st.cur + 1, 6)}/6</span><span class="chip">${esc(getSup(po.supplierId).name)} · Vendor</span>${po.status !== 'Rejected' && !st.complete ? `<span class="chip">${esc(st.next)}</span>` : ''}</div></div>
+    <div class="dots">${dots}</div><div class="pct">${st.pctDone}%</div>${po.status === 'Approved' && !st.complete ? '<span class="live">LIVE</span>' : ''}</div>
+  ${tabsHtml(tabs, tab, `#/po/${po.id}`)}
+  <div>${body(po, s)}</div></div>`;
 }
-ACT['po-submit-draft'] = el => { const po = getPO(el.dataset.id); const d = poDraftFrom(po); done(A.savePO(d, true)); };
-ACT['po-approve'] = el => confirmBox({ title: 'Approve purchase order', message: `Approve <b>${esc(getPO(el.dataset.id).number)}</b>? It becomes available for GRN, SRN and invoice selection${getPO(el.dataset.id).billingMethod === 'Milestone' ? ', and its milestone schedule is locked' : ''}.`, confirmLabel: 'Approve', onConfirm: () => done(A.approvePO(el.dataset.id)) });
+ACT['po-submit-draft'] = el => done(A.savePO(poDraftExisting(getPO(el.dataset.id)), true));
+ACT['po-approve'] = el => confirmBox({ title: 'Approve purchase order', message: `Approve <b>${esc(getPO(el.dataset.id).number)}</b>? It becomes available for ${recName(getPO(el.dataset.id))}${getPO(el.dataset.id).billingMethod === 'Milestone' ? ' and milestone' : ''} and invoice selection.`, confirmLabel: 'Approve', onConfirm: () => done(A.approvePO(el.dataset.id)) });
 ACT['po-reject'] = el => reasonModal({ title: 'Reject purchase order', label: 'Rejection reason', btn: 'Reject PO', onSubmit: reason => { done(A.rejectPO(el.dataset.id, reason)); } });
 ACT['po-reopen'] = el => done(A.reopenPO(el.dataset.id));
 
+/* what the user can do next on this PO */
+function nextSteps(po, s) {
+  const out = [];
+  if (po.status === 'Draft') out.push(['Submit the PO for approval.', gbtn('po.edit', 'po-submit-draft', 'Submit for Approval', { cls: 'btn-primary btn-sm', data: { id: po.id } })]);
+  else if (po.status === 'Pending Approval') out.push(['Waiting for the Procurement Manager.', gbtn('po.approve', 'po-approve', 'Approve', { cls: 'btn-primary btn-sm', data: { id: po.id } })]);
+  else if (po.status === 'Rejected') out.push(['The PO was rejected — revise and resubmit.', gbtn('po.edit', 'po-reopen', 'Revise PO', { cls: 'btn-primary btn-sm', data: { id: po.id } })]);
+  else if (po.status === 'Approved') {
+    if (po.billingMethod === 'Milestone') msOf(po).forEach(m => {
+      const g = msGate(m, po);
+      if (['Pending Approval', 'Rejected'].includes(m.status)) out.push([`${m.code} ${esc(m.name)} — awaiting approval.`, actBtn('ms-open', 'Review', { data: { id: m.id }, cls: 'btn-primary btn-xs' })]);
+      else if (m.status === 'Approved' && !g.ok) out.push([`${m.code} approved — ${esc(g.reason)}.`, actBtn('ms-open', 'Open', { data: { id: m.id }, cls: 'btn-outline btn-xs' })]);
+      else if (m.status === 'Approved') out.push([`${m.code} ${esc(m.name)} — approved and cleared; mark it complete when the work is done.`, actBtn('ms-open', 'Mark complete', { data: { id: m.id }, cls: 'btn-primary btn-xs' })]);
+      else if (msEnt(m, po) > 0 && usage('milestone', m.id).value < m.amount - EPS) out.push([`${m.code} ${esc(m.name)} — complete and ready to invoice (${money(m.amount)}).`, gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary btn-xs', data: { po: po.id, ms: m.id } })]);
+    });
+    else if (poCertified(po)) {
+      if (claimsOf(po).some(c => c.status === 'Submitted')) out.push(['A progress claim is awaiting certification.', actBtn('go', 'Review', { data: { hash: `#/po/${po.id}?tab=billing` }, cls: 'btn-primary btn-xs' })]);
+      else out.push(['Vendor raises the next progress claim.', gbtn('claim.create', 'claim-new', 'New claim', { cls: 'btn-outline btn-xs', data: { po: po.id } })]);
+      if (s.remaining > EPS) out.push([`${money(s.remaining)} of certified progress is ready to invoice.`, gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary btn-xs', data: { po: po.id } })]);
+    } else {
+      if (isGoods(po) ? s.remainingPOQty > EPS : sum(po.lines, l => lineServiceStats(po, l).remaining) > EPS) out.push([isGoods(po) ? `${fmtNum(s.remainingPOQty)} units are still to be received.` : 'Service value is still to be received.', isGoods(po) ? gbtn('grn.create', 'grn-new', 'Create GRN', { cls: 'btn-outline btn-xs', data: { po: po.id } }) : gbtn('srn.create', 'srn-new', 'Create SRN', { cls: 'btn-outline btn-xs', data: { po: po.id } })]);
+      const pend = isGoods(po) ? grnsOf(po).filter(g => g.status === 'Pending Inspection') : srnsOf(po).filter(x => x.status === 'Pending Acceptance');
+      if (pend.length) out.push([`${pend.length} ${recName(po)}${pend.length > 1 ? 's' : ''} awaiting ${isGoods(po) ? 'inspection' : 'acceptance'} — not invoice-eligible yet.`, actBtn('go', 'Open', { data: { hash: `#/po/${po.id}?tab=receipts` }, cls: 'btn-outline btn-xs' })]);
+      if (s.remaining > EPS) out.push([`${money(s.remaining)} is accepted and ready to invoice.`, gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary btn-xs', data: { po: po.id } })]);
+    }
+  }
+  return out;
+}
 function poOverview(po, s) {
-  const total = s.value || 1, w = x => pct(x, total).toFixed(2);
+  const total = s.value || 1, w = x => pct(x, total).toFixed(2), off = officeOf(po.office), sup = getSup(po.supplierId);
   const paid = s.paid, apprOnly = r2(s.approved - s.paid), res = s.reserved, avail = s.remaining;
-  const note = { Standard: ['standard', 'doc', 'Standard billing', 'Existing receipt-based flow: invoices are matched against accepted GRNs/SRNs on the PO. No billing schedule applies.'],
-    Progressive: ['progressive', 'layers', poCertified(po) ? 'Progressive billing — certified work progress' : 'Progressive billing — accepted receipts', poCertified(po) ? 'Invoice-eligible value = newly certified, unconsumed progress claims (current claim = new cumulative certified − previously certified).' : 'Invoice-eligible value = accepted GRN quantities / SRN values not yet consumed by a live invoice. Pending and rejected quantities never qualify.'],
-    Milestone: ['milestone', 'flag', 'Milestone billing', 'Invoice-eligible value = the amount allocated to an approved contractual milestone (plus any required SRN acceptance). Planned dates never create eligibility.'] }[po.billingMethod];
-  return `
-  <div class="method-banner ${note[0]}"><div class="ic">${icon(note[1], 14)}</div><div><b>${note[2]}</b> — ${note[3]}</div></div>
-  ${strip([['PO value', money(s.value), 'net, before VAT'], ['Received value', money(s.received), po.billingMethod === 'Milestone' ? 'milestones submitted/approved' : poCertified(po) ? 'claims submitted/certified' : 'incl. rejected / pending'], ['Accepted value', money(s.accepted), po.billingMethod === 'Milestone' ? 'approved &amp; gate-cleared' : poCertified(po) ? 'certified' : 'accepted receipts'],
-    ['Invoiced value', money(s.invoiced), `reserved in-flight: ${money(s.reserved)}`], ['Approved invoices', money(s.approved), 'approved · posted · paid'], ['Paid value', money(s.paid), 'demo payments'], ['Remaining eligible', money(s.remaining), 'accepted − invoiced', 'hl']])}
-  <div class="card flat" style="margin-top:14px"><h3>Where the PO value stands</h3>
-    <div class="bar" style="height:12px;width:100%"><span class="b-paid" style="width:${w(paid)}%"></span><span class="b-appr" style="width:${w(apprOnly)}%"></span><span class="b-res" style="width:${w(res)}%"></span><span class="b-avail" style="width:${w(avail)}%"></span></div>
-    <div class="legend"><span><i style="background:#2F9E62"></i>Paid ${money(paid)}</span><span><i style="background:#7BC79B"></i>Approved, unpaid ${money(apprOnly)}</span><span><i style="background:#F0B24A"></i>Reserved (in-flight) ${money(res)}</span><span><i style="background:var(--primary)"></i>Eligible to invoice ${money(avail)}</span><span><i style="background:#E6E6EC"></i>Not yet eligible ${money(Math.max(0, r2(s.value - paid - apprOnly - res - avail)))}</span></div></div>
-  ${s.hasGoods ? `${'<div class="sub-title">Goods quantities</div>'}${strip([['Ordered', fmtNum(sum(po.lines.filter(l => l.receiptType === 'Goods'), l => l.qty)) + ' units'], ['Received', fmtNum(s.receivedQty) + ' units'], ['Accepted (eligible)', fmtNum(s.acceptedQty) + ' units'], ['Rejected', fmtNum(s.rejectedQty) + ' units', 'not invoice-eligible'], ['Invoiced', fmtNum(s.invoicedQty) + ' units', po.billingMethod === 'Progressive' ? 'allocated to GRNs' : ''], ['Remaining PO qty', fmtNum(s.remainingPOQty) + ' units', 'not yet accepted / received', 'hl']])}` : ''}
-  <div class="sub-title">Purchase order details</div>
-  <div class="card flat"><div class="kvg">${kv('Supplier', `${esc(getSup(po.supplierId).name)}<div class="hint">${getSup(po.supplierId).code}</div>`)}${kv('Buyer entity', esc(po.buyer))}${kv('Category', esc(po.category))}${kv('PO date', fmtD(po.poDate))}${kv('Delivery date', fmtD(po.deliveryDate))}${kv('Payment terms', esc(po.terms))}${kv('Billing method', poMethodBadge(po))}${kv('PO status', sb(po.status))}${kv('Version', 'v' + po.version)}</div></div>`;
+  const log = db.audit.filter(a => a.poId === po.id).slice(0, 7), next = nextSteps(po, s);
+  const basis = po.billingMethod === 'Progressive' ? (poCertified(po) ? 'Certified work progress' : `Accepted ${recName(po)}s`) : po.billingMethod === 'Milestone' ? `${msOf(po).length} milestones` : `Accepted ${recName(po)}s, PO level`;
+  return `<div class="main-grid"><div>
+    <div class="stat-row"><div class="stat green"><b>${esc(po.status)}</b><span>Status</span></div><div class="stat peach"><b>${esc(po.createdBy)}</b><span>Raised By</span></div><div class="stat pink"><b>${esc(po.category)}</b><span>Category</span></div><div class="stat gray"><b>${money(s.value)}</b><span>Amount (excl. GST)</span></div></div>
+    <div class="meta-row"><div><div class="k">PO Title</div><div class="v">${esc(po.title)}</div></div><div><div class="k">Creation Date</div><div class="v">${fmtD(po.poDate)}</div></div><div><div class="k">Delivery Date</div><div class="v">${fmtD(po.deliveryDate)}</div></div><div><div class="k">End Date</div><div class="v">${fmtD(po.endDate)}</div></div></div>
+    <div class="cards-3" style="margin-top:22px">
+      <div class="card"><div class="card-t">Vendor Details</div><div class="strong" style="margin-bottom:8px">${esc(sup.name)}</div><div class="dl"><span class="k">Email</span><span>${esc(sup.email)}</span><span class="k">Mobile</span><span>${esc(sup.mobile)}</span><span class="k">GSTIN</span><span>${esc(sup.gstin)}</span></div></div>
+      <div class="card"><div class="card-t">Billing Details</div><div class="strong" style="margin-bottom:8px">${esc(off.name)}</div><div class="dl"><span class="k">Address</span><span>${esc(off.address)}</span><span class="k">GSTIN</span><span>${esc(off.gstin)}</span></div></div>
+      <div class="card"><div class="card-t">Billing Setup</div><div style="margin-bottom:10px">${poMethodBadge(po)}</div><div class="dl"><span class="k">Based on</span><span>${esc(basis)}</span><span class="k">GST</span><span>${gstOf(po)}%</span><span class="k">Receipt</span><span>${recName(po)} (${isGoods(po) ? 'goods' : 'services'})</span></div></div>
+    </div>
+    <div class="sec">Billing summary</div>
+    ${strip([['PO value', money(s.value), 'excl. GST'], ['Accepted', money(s.accepted), po.billingMethod === 'Milestone' ? 'approved milestones' : poCertified(po) ? 'certified' : `accepted ${recName(po)}s`], ['Invoiced', money(s.invoiced), `in flight: ${money(s.reserved)}`], ['Approved', money(s.approved), 'approved · posted · paid'], ['Paid', money(s.paid), 'demo payments'], ['Ready to invoice', money(s.remaining), 'accepted − invoiced', 'hl']])}
+    <div class="card flat" style="margin-top:14px"><div class="bar"><span class="b-paid" style="width:${w(paid)}%"></span><span class="b-appr" style="width:${w(apprOnly)}%"></span><span class="b-res" style="width:${w(res)}%"></span><span class="b-avail" style="width:${w(avail)}%"></span></div>
+      <div class="legend"><span><i style="background:#1F9D63"></i>Paid ${money(paid)}</span><span><i style="background:#7BC79B"></i>Approved, unpaid ${money(apprOnly)}</span><span><i style="background:#F0B24A"></i>Invoiced, in approval ${money(res)}</span><span><i style="background:var(--primary)"></i>Ready to invoice ${money(avail)}</span><span><i style="background:#E9E9F0"></i>Not yet accepted ${money(Math.max(0, r2(s.value - paid - apprOnly - res - avail)))}</span></div></div>
+    ${isGoods(po) ? `<div class="sec">Goods quantities</div>${strip([['Ordered', fmtNum(sum(po.lines, l => l.qty)) + ' units'], ['Delivered', fmtNum(s.receivedQty) + ' units'], ['Accepted', fmtNum(s.acceptedQty) + ' units'], ['Rejected', fmtNum(s.rejectedQty) + ' units', 'not invoice-eligible'], ['Still to receive', fmtNum(s.remainingPOQty) + ' units', '', 'hl']])}` : ''}
+    <div class="sec">Line Items</div>${lineTable(po)}
+  </div>
+  <div>
+    <div class="side-card"><h4>What's next</h4>${next.length ? next.map(([t, b]) => `<div class="attn"><div style="flex:1;line-height:1.45">${t}</div>${b}</div>`).join('') : `<div class="hint">${po.status === 'Approved' ? 'Nothing is waiting on you for this PO right now.' : 'No action available.'}</div>`}</div>
+    <div class="side-card"><h4 style="display:flex;align-items:center;gap:10px">Timeline<span class="spacer" style="flex:1"></span></h4>
+      <div class="row" style="margin-bottom:14px"><span class="tat">Overall TAT: ${tatOf(po)}</span><span class="spacer"></span><button class="btn-orange" data-act="po-export" data-id="${po.id}">${icon('download', 14, 2)}Export</button></div>
+      ${tlItems(po).join('') || '<div class="hint">No activity yet.</div>'}
+      <div style="text-align:right"><button class="link" style="font-size:12px" data-act="go" data-hash="#/po/${po.id}?tab=history">View full history</button></div></div>
+    <div class="side-card"><h4>Delegate Access</h4><div class="boxline"><button class="btn-dk" data-act="stub" data-name="Forward Request">+ Forward Request</button></div></div>
+    <div class="side-card"><h4>Multiple Email</h4><div class="boxline">No Email Tagged</div></div>
+    <div class="side-card"><h4>Support Ticket</h4><div class="boxline"><button class="btn-dk" data-act="stub" data-name="Support conversation">+ Start Conversation</button></div></div>
+    <div class="side-card"><h4>PO copy send to vendor</h4><div class="boxline"><div class="row"><span class="pill red" style="font-size:10px;border-radius:5px">PDF</span></div><button class="btn-dk" style="margin-top:10px" data-act="po-send" data-id="${po.id}">Send Copy</button></div></div>
+    <div class="side-card"><h4>Contract List</h4><div class="hint" style="text-align:center;padding:10px">No contract found</div></div>
+  </div></div>`;
 }
-function poLinesTab(po) {
-  return `<div class="tbl-wrap" style="margin-top:12px"><table class="grid compact"><thead><tr><th>#</th><th>Item / service</th><th>Code</th><th>Receipt type</th><th class="right">Qty</th><th>UoM</th><th class="right">Unit price</th><th class="right">Net value</th><th>Tax</th><th>Location</th><th class="right">Received / accepted</th><th class="right">Remaining</th></tr></thead><tbody>
-  ${po.lines.map(l => { const g = l.receiptType === 'Goods', st = g ? lineReceiptStats(po, l) : lineServiceStats(po, l); return `<tr><td>${l.no}</td><td class="strong">${esc(l.desc)}</td><td>${esc(l.code)}</td><td>${l.receiptType === 'Goods' ? 'Goods (GRN)' : 'Services (SRN)'}</td><td class="num">${fmtNum(l.qty)}</td><td>${esc(l.uom)}</td><td class="num">${fmtNum(l.price)}</td><td class="num strong">${fmtNum(lineNet(l))}</td><td>${l.taxCode}</td><td>${esc(l.location)}</td><td class="num">${g ? `${fmtNum(st.receivedQty)} / ${fmtNum(st.acceptedQty)} ${l.uom}` : `${money(sum(srnsOf(po).filter(x => x.lineId === l.id), srnEnt))} accepted`}</td><td class="num">${g ? fmtNum(st.remaining) + ' ' + l.uom : money(st.remaining)}</td></tr>`; }).join('')}
-  <tr class="total"><td colspan="7" class="right">PO value (net)</td><td class="num">${fmtNum(poNet(po))}</td><td colspan="4"></td></tr></tbody></table></div>`;
+/* PO line table — shared by Overview and Line Items */
+function lineTable(po) {
+  return `<div class="tbl-wrap"><table class="tbl sm"><thead><tr><th>Details</th><th>Delivery Address</th><th class="right">Qty / Unit</th><th class="right">Price / Unit</th><th class="right">${isGoods(po) ? 'Delivered' : 'Received'}</th><th class="right">${isGoods(po) ? 'Accepted' : 'Accepted'}</th><th class="right">${isGoods(po) ? 'Balance Qty' : 'Balance'}</th><th class="right">GST</th><th class="right">Amount</th></tr></thead><tbody>
+  ${po.lines.map(l => { const g = isGoods(po), st = g ? lineReceiptStats(po, l) : lineServiceStats(po, l), ss = srnsOf(po).filter(x => x.lineId === l.id);
+    return `<tr><td class="strong">${esc(l.desc)}<div class="sub" style="font-weight:400">Line ${l.no}</div></td><td>${esc(officeOf(po.office).name)}</td><td class="num">${fmtNum(l.qty)} ${esc(l.uom)}</td><td class="num">${money(l.price)} / ${esc(l.uom)}</td>
+      <td class="num">${g ? fmtNum(st.receivedQty) : money(sum(ss.filter(x => x.status !== 'Rejected'), x => x.serviceValue))}</td><td class="num">${g ? fmtNum(st.acceptedQty) : money(st.accepted)}</td><td class="num strong">${g ? fmtNum(st.remaining) : money(st.remaining)}</td><td class="num">${gstOf(po)}%</td><td class="num strong">${money(lineNet(l))}</td></tr>`; }).join('')}
+  <tr class="total"><td colspan="8" class="right">Total (excl. GST)</td><td class="num">${money(poNet(po))}</td></tr></tbody></table></div>`;
 }
+const poLinesTab = po => `<div style="margin-top:22px">${lineTable(po)}</div><p class="hint" style="margin-top:10px">GST (${gstOf(po)}%) is added on invoices: ${money(r2(poNet(po) * gstOf(po) / 100))} on the full PO value, ${money(poValueGross(po))} in total.</p>`;
 
-/* ----- billing schedule tab (method specific) ----- */
 function poBillingTab(po, s) {
-  if (po.billingMethod === 'Standard') return `<div class="method-banner standard"><div class="ic">${icon('doc', 14)}</div><div><b>Standard billing</b> — no additional billing schedule. Invoices are matched against the accepted receipts below (PO-level balance).</div></div>${receiptEntitlementTable(po, s, false)}`;
   if (po.billingMethod === 'Milestone') return milestoneTable(po, s);
   if (poCertified(po)) return claimsBlock(po, s);
-  return receiptEntitlementTable(po, s, true);
+  return receiptEntitlementTable(po, s, po.billingMethod === 'Progressive');
 }
-function receiptEntitlementTable(po, s, progressive) {
-  const items = s.items.filter(x => x.kind === 'grn' || x.kind === 'srn');
-  const alloc = [];
-  invsOf(po).filter(isLive).forEach(i => i.allocs.forEach(a => alloc.push({ i, a })));
-  return `<div class="sec-title">${progressive ? 'Receipt &amp; invoice allocation' : 'Eligible receipts'}<span class="sub">${progressive ? 'GRN/SRN entitlements consumed by invoices (live = submitted, matched, approved, posted or paid)' : 'Accepted receipts available for matching'}</span></div>
-  <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>Receipt reference</th><th class="right">Received qty</th><th class="right">Accepted qty</th><th class="right">Accepted value</th><th class="right">Previously allocated<div class="sub" style="text-transform:none;font-weight:400">approved / posted / paid</div></th><th class="right">Current invoice allocation<div class="sub" style="text-transform:none;font-weight:400">reserved, in-flight</div></th><th class="right">Remaining eligible qty</th><th class="right">Remaining eligible value</th><th>Receipt status</th></tr></thead><tbody>
-  ${items.map(x => { const g = x.kind === 'grn', rec = g ? x.ref.received : null; return `<tr class="${x.eligible ? '' : 'dim'}"><td class="strong">${link(g ? `#/grn/${x.refId}` : `#/srn/${x.refId}`, x.label)}<div class="sub">${fmtD(x.ref.date)}${x.ref.reversed ? ' · reversed' : ''}</div></td><td class="num">${g ? fmtNum(rec) : '—'}</td><td class="num">${g ? fmtNum(x.entQty) : '—'}</td><td class="num">${fmtNum(x.entValue)}</td>
-    <td class="num">${g ? `${fmtNum(x.committedQty)} u / ` : ''}${fmtNum(x.committedValue)}</td><td class="num">${g ? `${fmtNum(x.reservedQty)} u / ` : ''}${fmtNum(x.reservedValue)}</td><td class="num">${g ? fmtNum(x.availQty) : '—'}</td><td class="num strong">${fmtNum(x.availValue)}</td><td>${sb(x.status)}${!x.eligible && x.reason ? `<div class="sub">${esc(x.reason)}</div>` : ''}</td></tr>`; }).join('') || emptyRow(9, 'No receipts yet — create a GRN/SRN against this PO.')}
-  <tr class="total"><td>Total</td><td class="num">${fmtNum(sum(items.filter(x => x.kind === 'grn'), x => x.ref.received))}</td><td class="num">${fmtNum(sum(items, x => x.entQty || 0))}</td><td class="num">${fmtNum(s.accepted)}</td><td class="num">${fmtNum(sum(items, x => x.committedValue))}</td><td class="num">${fmtNum(sum(items, x => x.reservedValue))}</td><td class="num">${fmtNum(sum(items, x => x.availQty || 0))}</td><td class="num">${fmtNum(po.billingMethod === 'Standard' ? s.remaining : sum(items, x => x.availValue))}</td><td></td></tr></tbody></table></div>
-  ${po.billingMethod === 'Standard' ? '<p class="hint" style="margin-top:6px">Standard billing tracks the balance at PO level: accepted receipts − live invoices.</p>' : ''}
-  ${progressive ? `<div class="sub-title">Allocations by invoice</div><div class="tbl-wrap"><table class="grid compact"><thead><tr><th>Invoice</th><th>Supplier invoice no.</th><th>Receipt</th><th class="right">Qty</th><th class="right">Value (net)</th><th>Invoice status</th><th>Allocation state</th></tr></thead><tbody>${alloc.map(({ i, a }) => `<tr><td>${invLink(i)}</td><td>${esc(i.number)}</td><td>${esc(allocRefLabel(a))}</td><td class="num">${a.qty != null ? fmtNum(a.qty) : '—'}</td><td class="num">${fmtNum(a.value)}</td><td>${sb(i.status)}</td><td>${sb(APPROVED.includes(i.status) ? 'Committed' : 'Reserved')}</td></tr>`).join('') || emptyRow(7, 'No invoice has consumed any receipt yet.')}</tbody></table></div>` : ''}
-  <div class="row" style="margin-top:12px">${gbtn('inv.create', 'go', 'Create invoice from eligible receipts', { cls: 'btn-primary', data: { hash: `#/invoice/new?po=${po.id}` }, icn: 'receipt', dis: po.status !== 'Approved' })}</div>`;
-}
-const allocRefLabel = a => a.kind === 'grn' ? getGRN(a.refId)?.number : a.kind === 'srn' ? getSRN(a.refId)?.number : a.kind === 'milestone' ? getMS(a.refId) && msFull(getMS(a.refId)) : getClaim(a.refId)?.number;
-
-function milestoneTable(po, s) {
-  const ms = msOf(po), locked = po.scheduleStatus === 'Final';
-  const tot = sum(ms, m => m.amount), appr = sum(ms, m => msEnt(m, po)), inv = sum(ms, m => usage('milestone', m.id).value);
-  return `${strip([['Schedule', locked ? 'Finalized &amp; locked' : 'Draft', po.partialMilestone ? 'partial billing on' : 'one invoice per milestone'], ['Schedule total', money(tot), `${fmtNum(sum(ms, m => m.pct))}% of PO`], ['Invoice-eligible (approved)', money(appr)], ['Invoiced', money(inv)], ['Remaining eligible now', money(s.remaining), 'approved − invoiced', 'hl']])}
-  <div class="sec-title">Milestone schedule <span class="sub">Click a milestone to open its detail drawer</span><span class="spacer"></span>${po.status === 'Draft' ? gbtn('po.edit', 'go', 'Edit schedule', { data: { hash: `#/po/${po.id}/edit?step=3` }, icn: 'edit', cls: 'btn-primary btn-sm' }) : ''}${po.status === 'Pending Approval' ? gbtn('po.edit', 'po-reopen', 'Return to draft to edit', { data: { id: po.id } }) : ''}${po.status === 'Approved' ? gbtn('po.amend', 'po-amend', 'Amend schedule', { data: { id: po.id }, icn: 'edit' }) : ''}</div>
-  <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>ID</th><th>Name</th><th class="right">Amount</th><th>Completion status</th><th>Approval status</th><th>Linked SRN</th><th class="right">Invoiced</th><th class="right">Remaining balance</th><th>Linked invoice</th><th>Billing</th></tr></thead><tbody>
-  ${ms.map(m => { const u = usage('milestone', m.id), g = msGate(m, po), sr = m.srnId && getSRN(m.srnId), bill = msBilling(m, po);
-    const completion = m.status === 'Approved' ? 'Completed' : m.status === 'Submitted for Acceptance' ? 'Submitted' : m.status === 'Draft' ? 'Draft' : 'Not completed';
-    return `<tr class="click" data-act="ms-drawer" data-id="${m.id}"><td class="strong">${m.code}</td><td>${esc(m.name)}<div class="sub">Planned ${fmtD(m.planned)}</div></td><td class="num strong">${fmtNum(m.amount)}</td><td>${sb(completion)}</td><td>${sb(m.status)}</td><td>${m.srnRequired ? (sr ? `${esc(sr.number)} ${sb(sr.status)}` : '<span class="warn-t">Required · none linked</span>') : '<span class="dim-note">Not required</span>'}</td><td class="num">${fmtNum(u.value)}</td><td class="num strong">${fmtNum(r2(m.amount - u.value))}</td><td>${u.invs.map(invLink).join(', ') || '—'}</td><td>${sb(bill)}</td></tr>`; }).join('') || emptyRow(10, 'No milestones.')}
-  <tr class="total"><td colspan="2">Total</td><td class="num">${fmtNum(tot)}</td><td colspan="3"></td><td class="num">${fmtNum(inv)}</td><td class="num">${fmtNum(r2(tot - inv))}</td><td colspan="2"></td></tr></tbody></table></div>
-  <p class="hint" style="margin-top:8px">${locked ? `${icon('lock', 11)} The schedule is locked. Changes require an authorised PO amendment; invoiced milestones can never be rewritten.` : ''}</p>`;
-}
-function claimsBlock(po, s) {
-  const cs = claimsOf(po);
-  return `${strip([['Contract value', money(s.value)], ['Cumulative certified', money(cumCertified(po)), `${fmtNum(pct(cumCertified(po), s.value))}% of contract`], ['Invoiced', money(s.invoiced)], ['Remaining billable certified', money(s.remaining), '', 'hl']])}
-  <div class="sec-title">Progress claims <span class="sub">Certified work progress — separate from receipt-based billing</span><span class="spacer"></span>${po.status === 'Approved' ? gbtn('claim.create', 'go', 'New progress claim', { cls: 'btn-primary', data: { hash: `#/claim/new?po=${po.id}` }, icn: 'plus' }) : ''}</div>${claimTable(cs)}`;
-}
-function claimTable(cs) {
-  return `<div class="tbl-wrap"><table class="grid compact"><thead><tr><th>Claim</th><th>Period</th><th class="right">Previous cumulative certified</th><th class="right">Current claim</th><th class="right">Cumulative claimed</th><th class="right">Certified</th><th>Status</th><th>Linked invoice</th><th class="right">Remaining billable</th></tr></thead><tbody>
-  ${cs.map(c => { const v = claimView(c), u = usage('claim', c.id); return `<tr class="click" data-act="claim-drawer" data-id="${c.id}"><td class="strong">${c.number}<div class="sub">${esc(getPO(c.poId).number)}</div></td><td>${esc(c.period)}</td><td class="num">${fmtNum(v.prev)}</td><td class="num">${fmtNum(v.current)}</td><td class="num">${fmtNum(v.cum)}</td><td class="num">${c.status === 'Certified' ? fmtNum(v.certified) : '—'}</td><td>${sb(c.status)}</td><td>${u.invs.map(invLink).join(', ') || '—'}</td><td class="num strong">${c.status === 'Certified' ? fmtNum(v.remaining) : '—'}</td></tr>`; }).join('') || emptyRow(9, 'No progress claims yet.')}</tbody></table></div>`;
-}
-
-function poReceiptsTab(po) {
-  const gs = grnsOf(po), ss = srnsOf(po);
-  return `<div class="sec-title">Goods receipts (GRN)<span class="spacer"></span>${po.status === 'Approved' && po.lines.some(l => l.receiptType === 'Goods') ? gbtn('grn.create', 'go', 'Create GRN', { data: { hash: `#/grn/new?po=${po.id}` }, icn: 'plus' }) : ''}</div>
-  <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>GRN</th><th>Date</th><th class="right">Received</th><th class="right">Accepted</th><th class="right">Rejected</th><th class="right">Pending</th><th>Status</th></tr></thead><tbody>${gs.map(g => `<tr class="click" data-act="go" data-hash="#/grn/${g.id}"><td class="strong">${g.number}</td><td>${fmtD(g.date)}</td><td class="num">${fmtNum(g.received)}</td><td class="num">${fmtNum(g.accepted)}</td><td class="num">${fmtNum(g.rejected)}</td><td class="num">${fmtNum(['Submitted', 'Pending Inspection', 'Draft'].includes(g.status) ? grnPending(g) : 0)}</td><td>${sb(g.reversed ? 'Reversed' : g.status)}</td></tr>`).join('') || emptyRow(7, 'No goods receipts.')}</tbody></table></div>
-  <div class="sec-title">Service receipts (SRN)<span class="spacer"></span>${po.status === 'Approved' && po.lines.some(l => l.receiptType === 'Services') ? gbtn('srn.create', 'go', 'Create SRN', { data: { hash: `#/srn/new?po=${po.id}` }, icn: 'plus' }) : ''}</div>
-  <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>SRN</th><th>Date</th><th>Description</th><th>Linked milestone</th><th class="right">Service value</th><th class="right">Accepted value</th><th>Status</th></tr></thead><tbody>${ss.map(x => `<tr class="click" data-act="go" data-hash="#/srn/${x.id}"><td class="strong">${x.number}</td><td>${fmtD(x.date)}</td><td>${esc(x.description)}</td><td>${x.milestoneId ? esc(getMS(x.milestoneId).code) : '—'}</td><td class="num">${fmtNum(x.serviceValue)}</td><td class="num">${fmtNum(srnEnt(x))}</td><td>${sb(x.status)}</td></tr>`).join('') || emptyRow(7, 'No service receipts.')}</tbody></table></div>`;
-}
+function poReceiptsTab(po) { return isGoods(po) ? grnTable(po) : srnTable(po); }
 function poInvoicesTab(po) {
-  return `<div class="sec-title">Invoices against ${esc(po.number)}<span class="spacer"></span>${po.status === 'Approved' ? gbtn('inv.create', 'go', 'Create Invoice', { cls: 'btn-primary', data: { hash: `#/invoice/new?po=${po.id}` }, icn: 'plus' }) : ''}</div>
-  <div class="tbl-wrap"><table class="grid compact"><thead><tr><th>Invoice</th><th>Supplier inv. no.</th><th>Date</th><th>References</th><th class="right">Net</th><th class="right">VAT</th><th class="right">Gross</th><th>Matching</th><th>Status</th></tr></thead><tbody>${invsOf(po).map(i => `<tr class="click" data-act="go" data-hash="#/invoice/${i.id}"><td class="strong">${invRef(i)}</td><td>${esc(i.number)}</td><td>${fmtD(i.date)}</td><td>${esc(i.allocs.map(allocRefLabel).join(', ') || 'PO-level')}</td><td class="num">${fmtNum(i.net)}</td><td class="num">${fmtNum(i.vat)}</td><td class="num">${fmtNum(i.gross)}</td><td>${i.match ? sb(i.match.result) : '—'}</td><td>${sb(i.status)}</td></tr>`).join('') || emptyRow(9, 'No invoices yet.')}</tbody></table></div>`;
+  return `<div class="sec" style="margin-top:22px">Invoices<span class="spacer"></span>${po.status === 'Approved' ? gbtn('inv.create', 'inv-new', 'Submit Invoice', { cls: 'btn-primary', data: { po: po.id }, icn: 'plus' }) : ''}</div>
+  <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Invoice</th><th>Bill No.</th><th>Date</th><th>Against</th><th class="right">Base</th><th class="right">GST</th><th class="right">Total</th><th>Matching</th><th>Status</th><th></th></tr></thead><tbody>${invsOf(po).map(i => `<tr class="click" data-act="inv-view" data-id="${i.id}"><td class="strong">${invRef(i)}</td><td>${esc(i.number)}</td><td>${fmtD(i.date)}</td><td>${esc(i.allocs.map(allocRefLabel).join(', ') || 'PO level')}</td><td class="num">${fmtNum(i.net)}</td><td class="num">${fmtNum(i.gst)}</td><td class="num strong">${fmtNum(i.gross)}</td><td>${i.match ? sb(i.match.result) : '—'}</td><td>${sb(i.status)}</td><td class="act"><button class="btn-view" data-act="inv-view" data-id="${i.id}">${icon('open', 12, 2)}View</button></td></tr>`).join('') || emptyRow(10, 'No invoices yet.')}</tbody></table></div>`;
 }
-function poAuditTab(po) {
+function poHistoryTab(po) {
   const log = db.audit.filter(a => a.poId === po.id);
-  return `<div class="grid-2" style="margin-top:12px;align-items:start"><div><div class="sub-title" style="margin-top:6px">Approvals</div><ul class="tl">${po.approvals.map(a => `<li class="${a.action === 'Approved' ? 'ok' : a.action === 'Rejected' ? 'bad' : ''}"><div class="tt">${esc(a.action)}</div><div class="tm">${esc(a.by)} · ${fmtDT(a.at)}${a.note ? ' — ' + esc(a.note) : ''}</div></li>`).join('') || '<li><div class="tm">No approval activity yet.</div></li>'}</ul>
-    <div class="sub-title">Amendments</div><ul class="tl">${po.amendments.map(a => `<li class="amber"><div class="tt">v${a.version} — ${money(a.valueBefore)} → ${money(a.valueAfter)}</div><div class="tm">${esc(a.by)} · ${fmtDT(a.at)} · ${esc(a.reason)}</div><div class="hint">${esc(a.changes.join('; ') || 'No value change')}</div></li>`).join('') || '<li><div class="tm">No amendments.</div></li>'}</ul></div>
-  <div><div class="sub-title" style="margin-top:6px">Audit trail (allocations, receipts, invoices)</div><ul class="tl">${log.map(a => `<li class="${a.kind === 'ok' ? 'ok' : a.kind === 'bad' ? 'bad' : a.kind === 'alloc' ? 'amber' : ''}"><div class="tt">${esc(a.text)}</div><div class="tm">${esc(a.ref)} · ${esc(a.by)} · ${fmtDT(a.at)}</div></li>`).join('') || '<li><div class="tm">No activity.</div></li>'}</ul></div></div>`;
+  return `<div class="cards-2" style="margin-top:22px;align-items:start"><div class="timeline-card"><div class="card-t">Approvals</div><ul class="tl">${po.approvals.map(a => `<li class="${a.action === 'Approved' ? 'ok' : a.action === 'Rejected' ? 'bad' : ''}"><div class="tt">${esc(a.action)}</div><div class="tm">${esc(a.by)} · ${fmtDT(a.at)}${a.note ? ' — ' + esc(a.note) : ''}</div></li>`).join('') || '<li><div class="tm">No approval activity yet.</div></li>'}</ul>
+    <div class="card-t" style="margin-top:14px">Amendments</div><ul class="tl">${po.amendments.map(a => `<li class="amber"><div class="tt">v${a.version} — ${money(a.valueBefore)} → ${money(a.valueAfter)}</div><div class="tm">${esc(a.by)} · ${fmtDT(a.at)} · ${esc(a.reason)}</div><div class="hint">${esc(a.changes.join('; ') || 'No value change')}</div></li>`).join('') || '<li><div class="tm">No amendments.</div></li>'}</ul></div>
+  <div class="timeline-card"><div class="card-t">Audit trail</div><ul class="tl">${log.map(a => `<li class="${a.kind === 'ok' ? 'ok' : a.kind === 'bad' ? 'bad' : a.kind === 'alloc' ? 'amber' : ''}"><div class="tt">${esc(a.text)}</div><div class="tm">${esc(a.ref)} · ${esc(a.by)} · ${fmtDT(a.at)}</div></li>`).join('') || '<li><div class="tm">No activity.</div></li>'}</ul></div></div>`;
 }
+
+/* ----- View Purchase Order (document preview) ----- */
+ACT['po-view'] = el => {
+  const po = getPO(el.dataset.id);
+  openPanel({ key: 'po-view', mid: true, title: po.number, sub: `${esc(po.title)} · ${fmtD(po.poDate)}`, body: () => { const sup = getSup(po.supplierId), off = officeOf(po.office), net = poNet(po), gst = r2(net * gstOf(po) / 100);
+    return `<div class="doc"><h3>PURCHASE ORDER</h3>
+    <div class="box"><div><b>Vendor</b>${esc(sup.name)}<br>${esc(sup.email)}<br>GSTIN ${esc(sup.gstin)}</div><div class="r"><b>PO Number</b>${esc(po.number)}<br>Date ${fmtD(po.poDate)}<br>Delivery by ${fmtD(po.deliveryDate)}</div>
+      <div><b>Bill to</b>${esc(off.name)}<br>${esc(off.address)}<br>GSTIN ${off.gstin}</div><div class="r"><b>Billing method</b>${esc(methodLabel(po))}<br>Type ${esc(po.type)}<br>Version v${po.version}</div></div>
+    <table><thead><tr><th>#</th><th>Description</th><th class="r">Qty</th><th class="r">Unit price</th><th class="r">GST</th><th class="r">Amount</th></tr></thead><tbody>${po.lines.map(l => `<tr><td>${l.no}</td><td>${esc(l.desc)}</td><td class="r">${fmtNum(l.qty)} ${esc(l.uom)}</td><td class="r">${fmtNum(l.price)}</td><td class="r">${gstOf(po)}%</td><td class="r">${fmtNum(lineNet(l))}</td></tr>`).join('')}</tbody></table>
+    <div class="totals"><div><span>Base amount</span><span>${fmtNum(net)}</span></div><div><span>GST ${gstOf(po)}%</span><span>${fmtNum(gst)}</span></div><div class="g"><span>Total (INR)</span><span>${fmtNum(r2(net + gst))}</span></div></div>
+    ${po.billingMethod === 'Milestone' ? `<div class="sec-h">Payment milestones</div><table><thead><tr><th>#</th><th>Milestone</th><th class="r">%</th><th class="r">Amount</th></tr></thead><tbody>${msOf(po).map(m => `<tr><td>${m.code}</td><td>${esc(m.name)}${m.needsReceipt ? ` <span class="muted">(needs accepted ${recName(po)})</span>` : ''}</td><td class="r">${fmtNum(m.pct)}%</td><td class="r">${fmtNum(m.amount)}</td></tr>`).join('')}</tbody></table>` : ''}</div>`; } });
+};
 
 /* ----- amend PO ----- */
 ACT['po-amend'] = el => {
-  const po = getPO(el.dataset.id), ms = po.billingMethod === 'Milestone' ? msOf(po) : [], mode = po.scheduleMode || 'percent';
-  const lockedMs = m => usage('milestone', m.id).value > EPS || ['Approved', 'Submitted for Acceptance'].includes(m.status);
+  const po = getPO(el.dataset.id), ms = po.billingMethod === 'Milestone' ? msOf(po) : [];
+  const lockedMs = m => usage('milestone', m.id).value > EPS || ['Approved', 'Completed'].includes(m.status);
   openModal({ title: `Amend ${po.number} (v${po.version} → v${po.version + 1})`, cls: 'xwide', submitLabel: 'Apply amendment', html: `
-    ${alertBox('info', 'Historical records are preserved', 'Invoice allocations, receipts and approvals already recorded are never rewritten. Prices are locked on lines that already have receipts or invoices; quantities cannot fall below what is received.')}
-    <div class="sub-title" style="margin-top:4px">PO lines</div>
-    <table class="grid compact"><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th class="right">Current value</th></tr></thead><tbody>${po.lines.map(l => { const touched = grnsOf(po).some(g => g.lineId === l.id && g.status !== 'Draft') || srnsOf(po).some(s => s.lineId === l.id && s.status !== 'Draft') || invsOf(po).some(isLive); return `<tr><td>${l.no}</td><td>${esc(l.desc)}</td><td><input class="input sm num white" style="width:90px" name="q_${l.id}" type="number" step="any" value="${l.qty}"></td><td><input class="input sm num white" style="width:110px" name="p_${l.id}" type="number" step="any" value="${l.price}" ${touched ? 'readonly title="Locked — receipts/invoices exist"' : ''}> ${touched ? icon('lock', 11) : ''}</td><td class="num">${fmtNum(lineNet(l))}</td></tr>`; }).join('')}</tbody></table>
-    ${ms.length ? `<div class="sub-title">Milestone schedule <span class="hint" style="text-transform:none">(${mode === 'percent' ? '% of the amended PO value — must total 100%' : 'fixed amounts — must total the amended PO value'})</span></div>
-    <table class="grid compact"><thead><tr><th>ID</th><th>Name</th><th>${mode === 'percent' ? 'Percentage' : 'Amount'}</th><th class="right">Current amount</th><th>State</th></tr></thead><tbody>${ms.map(m => { const lk = lockedMs(m); return `<tr><td class="strong">${m.code}</td><td><input class="input sm white" name="mn_${m.id}" value="${esc(m.name)}" ${lk ? 'readonly' : ''}></td><td><input class="input sm num white" style="width:100px" name="mv_${m.id}" type="number" step="any" value="${mode === 'percent' ? m.pct : m.amount}" ${lk ? 'readonly' : ''}></td><td class="num">${fmtNum(m.amount)}</td><td>${lk ? `<span class="lock">${icon('lock', 11)} Locked — ${usage('milestone', m.id).value > EPS ? 'invoiced' : m.status.toLowerCase()}</span>` : sb(m.status)}</td></tr>`; }).join('')}
-      <tr><td class="strong">New</td><td><input class="input sm white" name="new_name" placeholder="Add milestone (optional)"></td><td><input class="input sm num white" style="width:100px" name="new_val" type="number" step="any" placeholder="${mode === 'percent' ? '%' : 'AED'}"></td><td colspan="2" class="hint">Leave blank to skip</td></tr></tbody></table>` : ''}
-    <div style="margin-top:12px">${fld('Amendment reason', 'reason', { rows: 2, req: true, ph: 'Why is the PO being amended?' })}</div>`,
+    ${alertBox('info', 'Historical records are preserved', 'Invoice allocations, receipts and approvals already recorded are never rewritten. Prices are locked on lines that already have receipts or invoices; quantities cannot fall below what is already received.')}
+    <div class="sec-h">PO lines</div>
+    <table class="tbl sm"><thead><tr><th>#</th><th>Item</th><th>Qty</th><th>Unit price</th><th class="right">Current value</th></tr></thead><tbody>${po.lines.map(l => { const touched = grnsOf(po).some(g => g.lineId === l.id) || srnsOf(po).some(s => s.lineId === l.id) || invsOf(po).some(isLive); return `<tr><td>${l.no}</td><td>${esc(l.desc)}</td><td><input class="input sm num" style="width:100px" name="q_${l.id}" type="number" step="any" value="${l.qty}"></td><td><input class="input sm num" style="width:120px" name="p_${l.id}" type="number" step="any" value="${l.price}" ${touched ? 'readonly title="Locked — receipts/invoices exist"' : ''}> ${touched ? icon('lock', 13) : ''}</td><td class="num">${fmtNum(lineNet(l))}</td></tr>`; }).join('')}</tbody></table>
+    ${ms.length ? `<div class="sec-h">Milestone schedule <span class="hint" style="text-transform:none;font-weight:400">(% of the amended PO value — must total 100%; locked milestones keep their amount)</span></div>
+    <table class="tbl sm"><thead><tr><th>ID</th><th>Name</th><th>%</th><th class="right">Current amount</th><th>State</th></tr></thead><tbody>${ms.map(m => { const lk = lockedMs(m); return `<tr><td class="strong">${m.code}</td><td><input class="input sm" name="mn_${m.id}" value="${esc(m.name)}" ${lk ? 'readonly' : ''}></td><td><input class="input sm num" style="width:100px" name="mv_${m.id}" type="number" step="any" value="${m.pct}" ${lk ? 'readonly' : ''}></td><td class="num">${fmtNum(m.amount)}</td><td>${lk ? `<span class="lock">${icon('lock', 13)} Locked — ${usage('milestone', m.id).value > EPS ? 'invoiced' : m.status.toLowerCase()}</span>` : sb(m.status)}</td></tr>`; }).join('')}
+      <tr><td class="strong">New</td><td><input class="input sm" name="new_name" placeholder="Add milestone (optional)"></td><td><input class="input sm num" style="width:100px" name="new_val" type="number" step="any" placeholder="%"></td><td colspan="2" class="hint">Leave blank to skip</td></tr></tbody></table>` : ''}
+    <div style="margin-top:16px">${fld('Amendment reason', 'reason', { rows: 2, req: true, ph: 'Why is the PO being amended?' })}</div>`,
     onSubmit: v => {
       const lines = po.lines.map(l => ({ id: l.id, qty: +v['q_' + l.id], price: +v['p_' + l.id] }));
-      const msIn = ms.map(m => ({ id: m.id, name: v['mn_' + m.id], pct: mode === 'percent' ? +v['mv_' + m.id] : m.pct, amount: mode === 'fixed' ? +v['mv_' + m.id] : m.amount }));
-      if (String(v.new_name || '').trim() && +v.new_val > 0) msIn.push({ id: 'new', name: v.new_name, pct: mode === 'percent' ? +v.new_val : 0, amount: mode === 'fixed' ? +v.new_val : 0 });
+      const msIn = ms.map(m => ({ id: m.id, name: v['mn_' + m.id], pct: +v['mv_' + m.id] }));
+      if (String(v.new_name || '').trim() && +v.new_val > 0) msIn.push({ id: 'new', name: v.new_name, pct: +v.new_val, needsReceipt: false });
       const r = A.amendPO(po.id, { lines, milestones: msIn, reason: v.reason });
       if (!r.ok) { errorModal(r.msg, r.errors); return false; }
       toast(r.msg); render();
     } });
 };
 
-/* ----- drawers ----- */
-ACT['ms-drawer'] = el => msDrawer(el.dataset.id);
-ACT['claim-drawer'] = el => claimDrawer(el.dataset.id);
+/* DICE-style timeline cards: who did what, with TAT chips */
+function tlItems(po) {
+  const ev = [...po.approvals].map(a => ({ t: a.action, who: a.by, at: a.at, note: a.note })).reverse();
+  return ev.slice(0, 4).map((e, i, arr) => { const prev = arr[i + 1], tat = prev ? Math.max(0, Math.round((new Date(e.at) - new Date(prev.at)) / 60000)) : 0;
+    return `<div class="tl-item"><div class="st"><span class="chip-done">COMPLETED</span><span class="chip-done">TAT: ${tat}m</span></div><div class="who"><span class="ok-dot"></span><div><b style="font-size:12px">${esc(e.t)}</b><div class="meta">${esc(e.who)}${e.note ? ' — ' + esc(e.note) : ''}<br>Sent on: ${fmtDT(e.at)}</div></div></div></div>`; });
+}
+function tatOf(po) { const a = po.approvals; if (!a.length) return '0m'; const m = Math.max(0, Math.round((new Date(a[a.length - 1].at) - new Date(po.createdAt)) / 60000)); return m < 60 ? m + 'm' : Math.round(m / 60) + 'h'; }
+ACT['po-send'] = el => toast(`${getPO(el.dataset.id).number} PDF sent to ${getSup(getPO(el.dataset.id).supplierId).name} (simulated)`);
+ACT['po-export'] = el => { const po = getPO(el.dataset.id), rows = db.audit.filter(a => a.poId === po.id).map(a => [fmtDT(a.at), a.by, a.ref, a.text].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+  const url = URL.createObjectURL(new Blob([['"When","By","Ref","Event"', ...rows].join('\n')], { type: 'text/csv' })); const a = document.createElement('a'); a.href = url; a.download = `timeline-${po.id}.csv`; document.body.appendChild(a); a.click(); a.remove(); toast('Timeline exported'); };
