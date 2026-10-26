@@ -81,15 +81,15 @@ run('services milestone flow', () => {
 run('progressive flow', () => {
   seedDb('default'); nav('po/po-1042?tab=billing');
   const g1 = db.grns.find(g => g.poId === 'po-1042' && g.number === 'GRN-001'), g2 = db.grns.find(g => g.poId === 'po-1042' && g.number === 'GRN-002');
-  const inv = (no, g, qty) => { openInvPanel({ poId: 'po-1042' }); setv('number', no); const cb = $q(`[data-act="inv-pick"][data-ref="${g.id}"]`); cb.click(); setv(`alloc.grn:${g.id}.qty`, qty); };
+  const addLine = id => { click('.panel [data-act="inv-line-add"]'); const cb = $q(`.overlay input[data-pick="${id}"]`); if (!cb) { const none = $q('.overlay')?.textContent.includes('No Items found'); document.querySelector('.overlay')?.remove(); return none ? 'none' : 'missing'; } cb.click(); submitModal(); return 'added'; };
+  const inv = (no, g, qty) => { openInvPanel({ poId: 'po-1042' }); setv('number', no); addLine('grn:' + g.id); setv(`alloc.grn:${g.id}.qty`, qty); };
   inv('BIE-001', g1, 30); T('preview + totals update', panelText().includes('35,400'), panelText().slice(0, 100)); click('[data-act="inv-save"][data-m="submit"]');
   T('invoice 1 pending approval', db.invoices.some(i => i.number === 'BIE-001' && i.status === 'Pending Approval' && i.gross === 35400));
   closePanel(); inv('BIE-002', g2, 20); click('[data-act="inv-save"][data-m="submit"]'); T('invoice 2 created', db.invoices.some(i => i.number === 'BIE-002'));
-  closePanel(); openInvPanel({ poId: 'po-1042' }); T('GRN-001 shows as fully used (no checkbox enabled)', $q(`[data-act="inv-pick"][data-ref="${g1.id}"]`).disabled === true);
-  setv('number', 'X'); $q(`[data-act="inv-pick"][data-ref="${g2.id}"]`).disabled || (() => {})();
+  closePanel(); openInvPanel({ poId: 'po-1042' }); T('fully used GRN-001 is not offered in the Add Line Item dialog', addLine('grn:' + g1.id) === 'missing');
   /* over-allocation live message */
   closePanel(); db.invoices.find(i => i.number === 'BIE-002').status = 'Rejected'; db.invoices.find(i => i.number === 'BIE-002').allocs = [];
-  openInvPanel({ poId: 'po-1042' }); setv('number', 'Y'); $q(`[data-act="inv-pick"][data-ref="${g2.id}"]`).click(); setv(`alloc.grn:${g2.id}.qty`, 45);
+  openInvPanel({ poId: 'po-1042' }); setv('number', 'Y'); addLine('grn:' + g2.id); setv(`alloc.grn:${g2.id}.qty`, 45);
   T('over-quantity shows a live blocked message', $q('#inv-sum').textContent.includes('would be blocked') && $q('#inv-sum').textContent.includes('exceeds the eligible quantity'), $q('#inv-sum').textContent);
   click('[data-act="inv-save"][data-m="submit"]'); T('over-quantity submit blocked', !db.invoices.some(i => i.number === 'Y') && modalText().length > 0); document.querySelector('.overlay')?.remove(); closePanel();
 });

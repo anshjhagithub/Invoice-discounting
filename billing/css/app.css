@@ -592,3 +592,14 @@ select.input.sm{padding-right:30px;background-position:right 10px center}
 .dv-tot tr.b td{font-weight:700;border-top:1px solid #C9C9D3}
 .li-table td .sub{font-size:11px;color:var(--muted);font-weight:400;margin-top:2px}
 .li-table td .link{font-size:12px}
+
+/* Overview shows every tab's content in one scroll */
+.ov-sec{margin-top:38px;padding-top:6px;border-top:2px solid var(--border)}
+.ov-h{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--primary-600);margin:18px 0 -8px}
+.main-grid>div:last-child{position:sticky;top:14px;align-self:start;max-height:calc(100vh - 28px);overflow-y:auto}
+
+.addline{background:none;border:none;padding:6px 0;font-size:13.5px;font-weight:600;color:var(--text);cursor:pointer}
+.addline:hover{color:var(--primary)}
+.modal-search{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border-2);padding:8px 4px;color:var(--muted)}
+.modal-search input{border:none;outline:none;flex:1;font-size:14px;background:none}
+.modal .noitems{padding:26px 0}

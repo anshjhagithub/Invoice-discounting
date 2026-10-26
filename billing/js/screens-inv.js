@@ -68,8 +68,8 @@ function invBody() {
     <div class="fgrid">${F.text('Bill Date', 'date', { type: 'date', req: 1 })}${F.text('Due Date', 'dueDate', { type: 'date' })}</div>
     <div class="field" style="margin-bottom:8px"><label style="text-transform:none;font-size:13px;font-weight:500;letter-spacing:0;color:var(--text)">Line Items<span class="req"> *</span></label>
     <table class="li-table"><thead><tr><th>Details</th><th style="width:78px">Qty</th><th style="width:104px">Price</th><th style="width:70px">Tax</th><th style="width:74px">Cost Allocation</th><th style="width:86px">Action</th></tr></thead><tbody>
-    ${rows.map(r => invLineRow(r, po)).join('') || `<tr><td class="empty" colspan="6">No Line Items Added — pick ${po.billingMethod === 'Milestone' ? 'a milestone' : `a ${L}`} below</td></tr>`}</tbody></table></div>
-    ${po.billingMethod === 'Standard' ? invStdHint(po) : `<div class="li-actions"><button type="button" class="btn btn-green btn-sm" data-act="inv-picker">${icon('plus', 13, 2.2)}${f.picker === false ? 'Add Line Item' : 'Hide eligible items'}</button></div>${f.picker === false ? '' : invPicker(f, po)}`}
+    ${rows.map(r => invLineRow(r, po)).join('') || `<tr><td class="empty" colspan="6">No Line Items Added — use “+ Add Line Item” below</td></tr>`}</tbody></table></div>
+    ${po.billingMethod === 'Standard' ? invStdHint(po) : `<div class="li-actions" style="margin:4px 0 6px"><button type="button" class="addline" data-act="inv-line-add">+ Add Line Item</button></div>`}
     <div class="field" style="margin-top:20px"><label>Discount Percent</label><input class="input" type="number" min="0" max="100" step="any" data-t="num" data-f="discountPct" value="${esc(f.discountPct)}" placeholder="Enter the discount percentage"><div class="fhint" style="color:var(--danger)">Discount will be applied before tax</div></div>
     <div class="field"><label>Total Amount</label><div class="ro" id="inv-total"></div></div>
     <div class="field"><label>TCS (Tax Collected at Source)</label><input class="input" type="number" step="any" data-t="num" data-f="tcs" value="${esc(f.tcs)}" placeholder="Enter TCS amount"></div>
@@ -99,26 +99,31 @@ function invLineRow(r, po) {
   return `<tr><td><b>${name}</b><div class="sub">${esc(it.label)} · ${fmtD(it.ref.date || it.ref.planned)}</div></td><td class="num">${qty}</td><td>${price}</td><td class="num" id="il-tax-${r.key}"></td><td style="text-align:center">${cj}</td><td style="white-space:nowrap"><button type="button" class="link" data-act="inv-edit-line" data-key="${r.key}">Edit</button> <button type="button" class="link" style="color:var(--danger)" data-act="inv-del-line" data-key="${r.key}">Delete</button></td></tr>`;
 }
 const invStdHint = po => { const s = poSummary(po); return `<div class="li-actions"><button type="button" class="link" data-act="inv-full-std">Use the full available balance (${money(s.remaining)})</button></div>${noteBox('gray', 'doc', `<b>Standard billing</b> — matched against accepted ${recName(po)}s at PO level. Accepted <b>${money(s.accepted)}</b>, already invoiced <b>${money(r2(s.accepted - s.remaining))}</b>.`)}`; };
-function invPicker(f, po) {
-  const items = sourceItems(po, f.id), L = recName(po), g = isGoods(po), ordered = [...items.filter(x => x.eligible), ...items.filter(x => !x.eligible)];
-  const intro = po.billingMethod === 'Milestone' ? noteBox('', 'flag', `A milestone can be invoiced once it is <b>approved</b> and, where required, its <b>${L}</b> is accepted. Each milestone is billed in full, once.`)
-    : poCertified(po) ? noteBox('green', 'layers', '<b>Certified work progress</b> — only newly certified, unbilled value can be invoiced.')
-    : noteBox('green', 'layers', `<b>Progressive billing</b> — invoice any part of an accepted ${L}. Quantities used by other invoices are not available; pending and rejected ${g ? 'units' : 'value'} never qualify.`);
-  const card = x => { const key = x.kind + ':' + x.refId, on = f.alloc[key]?.on, dis = !(x.eligible || on) ? 'disabled' : '', m = x.ref;
-    const nm = x.kind === 'milestone' ? `${m.code} — ${esc(m.name)}` : x.kind === 'claim' ? `${x.label} · ${esc(m.period)}` : `${x.label} · ${fmtD(m.date)}`;
-    const sm = x.kind === 'milestone' ? `${sb(m.status)} ${m.needsReceipt ? `· ${L}: ${msGate(m, po).rec ? esc(msGate(m, po).rec.number) : 'none linked'}` : ''}` : `${sb(x.status)} ${x.kind === 'grn' ? `accepted ${fmtNum(x.entQty)} u · used ${fmtNum(x.usedQty)} u` : `accepted ${money(x.entValue)} · used ${money(x.usedValue)}`}`;
-    const amt = x.kind === 'milestone' ? money(m.amount) : x.kind === 'grn' ? `${fmtNum(x.availQty)} u<div class="hint" style="font-weight:400">${money(x.availValue)} available</div>` : `${money(x.availValue)}<div class="hint" style="font-weight:400">available</div>`;
-    return `<div class="pick ${on ? 'on' : x.eligible ? '' : 'off'}"><div class="top"><input type="checkbox" ${on ? 'checked' : ''} ${dis} data-act="inv-pick" data-kind="${x.kind}" data-ref="${x.refId}"><div style="min-width:0"><div class="nm">${nm}</div><div class="sm">${sm}</div></div><div class="amt">${amt}</div></div>${!x.eligible && !on && x.reason ? `<div class="why" style="color:var(--text-2)">${esc(x.reason)}</div>` : ''}</div>`; };
-  return `<div style="margin-top:6px">${intro}${ordered.map(card).join('') || `<div class="empty-state">No eligible ${po.billingMethod === 'Milestone' ? 'milestones' : L + 's'} on this PO yet.</div>`}</div>`;
-}
-ACT['inv-picker'] = () => { ui.f.picker = ui.f.picker === false; render(); };
-ACT['inv-pick'] = el => {
-  const f = ui.f, po = getPO(f.poId), key = el.dataset.kind + ':' + el.dataset.ref;
-  if (!el.checked) { delete f.alloc[key]; return render(); }
-  const it = sourceItems(po, f.id).find(x => x.kind === el.dataset.kind && x.refId === el.dataset.ref);
-  if (it.kind === 'grn') f.alloc[key] = { on: true, qty: it.availQty };
-  else f.alloc[key] = { on: true, value: it.availValue > 0 ? it.availValue : (it.ref.amount || it.entValue) };
-  render();
+/* "+ Add Line Item" → dialog listing what can still be invoiced (search, tick, Add) — as in DICE */
+ACT['inv-line-add'] = () => {
+  const f = ui.f, po = getPO(f.poId), L = recName(po), g = isGoods(po);
+  const items = sourceItems(po, f.id).filter(x => x.eligible && !f.alloc[x.kind + ':' + x.refId]?.on);
+  const blocked = sourceItems(po, f.id).filter(x => !x.eligible && !f.alloc[x.kind + ':' + x.refId]?.on);
+  const intro = po.billingMethod === 'Milestone' ? 'Only milestones that are approved, marked complete and (where required) have an accepted ' + L + ' appear here. Each is billed in full, once.'
+    : poCertified(po) ? 'Only newly certified, unbilled progress appears here.' : `Only accepted ${L}s with quantity still left appear here — pending, rejected and fully used ${g ? 'units' : 'value'} never qualify.`;
+  const row = x => { const m = x.ref, key = x.kind + ':' + x.refId;
+    const nm = x.kind === 'milestone' ? `${m.code} — ${esc(m.name)}` : x.kind === 'claim' ? `${x.label} · ${esc(m.period)}` : x.kind === 'grn' ? `${esc(x.line.desc)}` : esc(m.description);
+    const ref = x.kind === 'milestone' ? `Due ${fmtD(m.planned)}` : `${x.label} · ${fmtD(m.date)}`;
+    return `<tr data-q="${esc((nm + ' ' + ref).toLowerCase())}"><td style="width:46px"><input type="checkbox" data-pick="${key}" style="accent-color:var(--primary);width:17px;height:17px"></td><td><b>${nm}</b><div class="sub">${esc(ref)}</div></td><td class="num">${fmtNum(x.kind === 'grn' ? x.price : x.availValue)}</td><td class="num">${x.kind === 'grn' ? fmtNum(x.availQty) : 1}</td><td class="num">${fmtNum(x.availValue)}</td></tr>`; };
+  const ov = openModal({ title: 'Add Line Item', cls: 'wide', submitLabel: 'Add', html: `<p style="margin:-6px 0 14px;font-size:12.5px">select line items to add</p>
+    <p class="hint" style="margin:0 0 12px">${esc(intro)}</p>
+    <div class="modal-search">${icon('search', 15)}<input placeholder="Search" data-mfilter autocomplete="off"></div>
+    <div class="tbl-wrap" style="margin-top:14px;max-height:340px;overflow:auto"><table class="tbl sm"><thead><tr><th style="width:46px"><input type="checkbox" data-pickall style="accent-color:var(--primary);width:17px;height:17px"></th><th>DETAILS</th><th class="right">PRICE</th><th class="right">QUANTITY</th><th class="right">AMOUNT(INR)</th></tr></thead><tbody>${items.map(row).join('') || `<tr><td colspan="5" class="empty"><div class="noitems">${icon('box', 34, 1.4)}<span>No Items found</span></div>${blocked.length ? `<div class="hint" style="margin-top:6px">${esc(blocked[0].label)}: ${esc(blocked[0].reason)}${blocked.length > 1 ? ` (+${blocked.length - 1} more not eligible)` : ''}</div>` : ''}</td></tr>`}</tbody></table></div>`,
+    onSubmit: (v, form) => {
+      const keys = [...form.querySelectorAll('input[data-pick]:checked')].map(c => c.dataset.pick);
+      if (!keys.length) { toast('Tick at least one line item to add', 'err'); return false; }
+      const all = sourceItems(po, f.id);
+      keys.forEach(key => { const it = all.find(x => x.kind + ':' + x.refId === key); if (!it) return;
+        f.alloc[key] = it.kind === 'grn' ? { on: true, qty: it.availQty } : { on: true, value: it.availValue > 0 ? it.availValue : (it.ref.amount || it.entValue) }; });
+      render();
+    } });
+  const qf = ov.querySelector('[data-mfilter]'); if (qf) qf.addEventListener('input', () => { const q = qf.value.toLowerCase(); ov.querySelectorAll('tbody tr[data-q]').forEach(tr => { tr.style.display = tr.dataset.q.includes(q) ? '' : 'none'; }); });
+  const pa = ov.querySelector('[data-pickall]'); if (pa) pa.addEventListener('change', () => ov.querySelectorAll('input[data-pick]').forEach(c => { if (c.closest('tr').style.display !== 'none') c.checked = pa.checked; }));
 };
 ACT['inv-del-line'] = el => { delete ui.f.alloc[el.dataset.key]; render(); };
 ACT['inv-edit-line'] = el => { const row = el.closest('tr'); const inp = row && row.querySelector('input'); if (inp) { inp.focus(); inp.select(); } else toast('This line is billed in full and cannot be edited', 'err'); };

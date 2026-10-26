@@ -198,6 +198,10 @@ function poOverview(po, s) {
       <div class="legend"><span><i style="background:#1F9D63"></i>Paid ${money(paid)}</span><span><i style="background:#7BC79B"></i>Approved, unpaid ${money(apprOnly)}</span><span><i style="background:#F0B24A"></i>Invoiced, in approval ${money(res)}</span><span><i style="background:var(--primary)"></i>Ready to invoice ${money(avail)}</span><span><i style="background:#E9E9F0"></i>Not yet accepted ${money(Math.max(0, r2(s.value - paid - apprOnly - res - avail)))}</span></div></div>
     ${isGoods(po) ? `<div class="sec">Goods quantities</div>${strip([['Ordered', fmtNum(sum(po.lines, l => l.qty)) + ' units'], ['Delivered', fmtNum(s.receivedQty) + ' units'], ['Accepted', fmtNum(s.acceptedQty) + ' units'], ['Rejected', fmtNum(s.rejectedQty) + ' units', 'not invoice-eligible'], ['Still to receive', fmtNum(s.remainingPOQty) + ' units', '', 'hl']])}` : ''}
     <div class="sec">Line Items</div>${lineTable(po)}
+    <div class="ov-sec"><div class="ov-h">${esc(billTabName(po))}</div>${poBillingTab(po, s)}</div>
+    <div class="ov-sec"><div class="ov-h">${isGoods(po) ? 'GRN' : 'SRN'}</div>${rcTab(po, true)}</div>
+    <div class="ov-sec"><div class="ov-h">Invoices</div>${poInvoicesTab(po)}</div>
+    <div class="ov-sec"><div class="ov-h">History</div>${poHistoryTab(po)}</div>
   </div>
   <div>
     <div class="side-card"><h4>What's next</h4>${next.length ? next.map(([t, b]) => `<div class="attn"><div style="flex:1;line-height:1.45">${t}</div>${b}</div>`).join('') : `<div class="hint">${po.status === 'Approved' ? 'Nothing is waiting on you for this PO right now.' : 'No action available.'}</div>`}</div>
