@@ -1,7 +1,7 @@
 /* =====================================================================
    core.js — helpers, icons, persistence, audit, roles
    ===================================================================== */
-const STORE_KEY = 'dice.billing.proto.v2';
+const STORE_KEY = 'dice.billing.proto.v3';
 const GST_RATES = [0, 5, 12, 18, 28];
 const GST_DEFAULT = 18;
 const CURRENCY = 'INR';
@@ -64,8 +64,8 @@ const ROLES = {
 const PERM = {
   'po.edit': ['buyer'], 'po.approve': ['buyer'], 'po.amend': ['buyer'],
   'grn.create': ['receiver'], 'grn.decide': ['receiver'], 'srn.create': ['receiver'], 'srn.decide': ['receiver'],
-  'ms.submit': ['supplier', 'receiver', 'buyer'], 'ms.decide': ['buyer', 'receiver'], 'claim.create': ['supplier'], 'claim.decide': ['buyer'],
-  'inv.create': ['supplier', 'ap'], 'inv.match': ['ap', 'supplier'], 'inv.approve': ['ap'], 'inv.post': ['ap'], 'inv.adjust': ['ap'], 'inv.cancel': ['ap', 'supplier'],
+  'ms.start': ['supplier', 'receiver'], 'ms.submit': ['supplier', 'receiver'], 'ms.decide': ['receiver', 'buyer'], 'claim.create': ['supplier'], 'claim.decide': ['buyer'],
+  'inv.create': ['supplier', 'ap'], 'inv.match': ['ap', 'supplier'], 'inv.approve': ['ap'], 'inv.post': ['ap'], 'inv.adjust': ['ap'], 'inv.reverse': ['ap'], 'inv.cancel': ['ap', 'supplier'],
 };
 const can = k => !db || db.meta.role === 'admin' || (PERM[k] || []).includes(db.meta.role);
 const whyNot = k => `Requires role: ${(PERM[k] || []).map(r => ROLES[r].name).join(' / ')} (switch role in the sidebar)`;

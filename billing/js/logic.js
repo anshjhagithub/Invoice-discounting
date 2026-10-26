@@ -4,16 +4,18 @@
    from the underlying records (nothing is hard-coded into screens).
 
    Model rules that keep the flows consistent:
-   - A PO is either Goods (receipts = GRN) or Services (receipts = SRN). Never both.
-   - Milestone gate: a milestone may require an accepted receipt — a GRN on a Goods PO,
-     an SRN on a Services PO. The gate type always follows the PO type.
+   - A PO is Goods (receipts = GRN), Services (receipts = SRN) or Mixed (each line is goods or a service).
+   - A milestone is billable only when it is APPROVED and every configured acceptance condition holds:
+     document approval (evidence on the milestone itself), accepted GRN(s) for goods, accepted SRN(s) for services.
+     Documents and receipts are separate records — a certificate never creates a GRN/SRN.
+   - Milestone lifecycle: Pending → In Progress → Submitted for Approval → Under Review → Approved | Rejected (→ resubmit).
    - Certified work progress is a Services-only progressive basis, tracked at PO level.
    ===================================================================== */
 const LIVE = ['Submitted', 'Pending Matching', 'Pending Approval', 'Approved', 'Posted', 'Paid'];   // invoice states that hold an allocation
 const APPROVED = ['Approved', 'Posted', 'Paid'];
 const GRN_OK = ['Accepted', 'Partially Accepted'];
 const SRN_OK = ['Accepted', 'Partially Accepted'];
-const isLive = i => LIVE.includes(i.status);
+const isLive = i => LIVE.includes(i.status) && !i.reversed;     // a reversed (credited) invoice no longer holds an allocation
 
 const getPO = id => db.pos.find(p => p.id === id);
 const getSup = id => db.suppliers.find(s => s.id === id);
@@ -31,9 +33,12 @@ const msOf = po => db.milestones.filter(m => m.poId === po.id).sort((a, b) => a.
 const claimsOf = po => db.claims.filter(c => c.poId === po.id).sort((a, b) => a.seq - b.seq);
 const invsOf = po => db.invoices.filter(i => i.poId === po.id);
 const poAllocatable = po => po.status === 'Approved';
-const isGoods = po => po.type === 'Goods';
-const recLabel = po => isGoods(po) ? 'GRN' : 'SRN';                       // receipt document for this PO type
-const recOf = (po, id) => id ? (isGoods(po) ? getGRN(id) : getSRN(id)) : null;
+const lineKind = (po, l) => po.type === 'Mixed' ? (l.kind === 'Services' ? 'Services' : 'Goods') : po.type;
+const goodsLines = po => po.lines.filter(l => lineKind(po, l) === 'Goods');
+const serviceLines = po => po.lines.filter(l => lineKind(po, l) === 'Services');
+const hasGoods = po => goodsLines(po).length > 0, hasServices = po => serviceLines(po).length > 0;
+const isGoods = po => po.type === 'Goods';                                  // purely goods
+const recLabel = po => po.type === 'Mixed' ? 'GRN / SRN' : po.type === 'Goods' ? 'GRN' : 'SRN';
 const poCertified = po => po.billingMethod === 'Progressive' && po.progressBasis === 'Certified';
 const methodLabel = po => po.billingMethod === 'Progressive' ? (poCertified(po) ? 'Progressive · Certified progress' : 'Progressive · Receipt-based') : po.billingMethod;
 const msFull = m => `${m.code} — ${m.name}`;
@@ -70,27 +75,27 @@ function lineReceiptStats(po, line, exGrnId) {
   };
 }
 /* milestone ↔ receipt link validation shared by GRN / SRN creation and the link action */
-function checkReceiptLink(po, milestoneId, receiptId) {
+function checkReceiptLink(po, milestoneId, kind) {
   if (!milestoneId) return [];
-  const m = getMS(milestoneId);
+  const m = getMS(milestoneId), L = kind.toUpperCase();
   if (!m || m.poId !== po.id) return ['The selected milestone does not belong to this PO.'];
-  if (!m.needsReceipt) return [`${m.code} does not require a ${recLabel(po)}.`];
-  if (usage('milestone', m.id).value > EPS) return [`${m.code} is already invoiced — its ${recLabel(po)} link can no longer change.`];
+  if (!(kind === 'grn' ? m.needsGrn : m.needsSrn)) return [`${m.code} is not configured to require a ${L}.`];
   return [];
 }
 function validateGRN(d) {
   const po = getPO(d.poId), errs = [];
-  if (!po) return ['Select an approved goods purchase order.'];
+  if (!po) return ['Select an approved purchase order with goods lines.'];
   if (po.status !== 'Approved') return [`${po.number} is ${po.status}. Goods receipts can only be created against an approved PO.`];
-  if (!isGoods(po)) return [`${po.number} is a Services PO — create a service receipt (SRN) instead of a GRN.`];
+  if (!hasGoods(po)) return [`${po.number} has no goods lines — record services with a service receipt (SRN) instead of a GRN.`];
   const line = lineOf(po, d.lineId);
   if (!line) return ['Select a PO line.'];
+  if (lineKind(po, line) !== 'Goods') return [`Line ${line.no} is a services line — record it with an SRN, not a GRN.`];
   const st = lineReceiptStats(po, line, d.id);
   if (!(d.received > 0)) errs.push('Delivered quantity must be greater than zero.');
   if (d.received > st.remaining + EPS) errs.push(`Delivered quantity (${fmtNum(d.received)}) exceeds the remaining PO quantity (${fmtNum(st.remaining)} ${line.uom}) on line ${line.no}.`);
   if (d.accepted < 0 || d.rejected < 0) errs.push('Accepted and rejected quantities cannot be negative.');
   if (r2(d.accepted + d.rejected) > d.received + EPS) errs.push(`Accepted (${fmtNum(d.accepted)}) + rejected (${fmtNum(d.rejected)}) cannot exceed delivered quantity (${fmtNum(d.received)}).`);
-  checkReceiptLink(po, d.milestoneId, null).forEach(e => errs.push(e));
+  checkReceiptLink(po, d.milestoneId, 'grn').forEach(e => errs.push(e));
   return errs;
 }
 
@@ -103,33 +108,57 @@ function lineServiceStats(po, line, exId) {
 }
 function validateSRN(d) {
   const po = getPO(d.poId), errs = [];
-  if (!po) return ['Select an approved services purchase order.'];
+  if (!po) return ['Select an approved purchase order with service lines.'];
   if (po.status !== 'Approved') return [`${po.number} is ${po.status}. Service receipts can only be created against an approved PO.`];
-  if (isGoods(po)) return [`${po.number} is a Goods PO — create a goods receipt (GRN) instead of an SRN.`];
+  if (!hasServices(po)) return [`${po.number} has no service lines — record goods with a goods receipt (GRN) instead of an SRN.`];
   const line = lineOf(po, d.lineId); if (!line) return ['Select a PO line.'];
+  if (lineKind(po, line) !== 'Services') return [`Line ${line.no} is a goods line — record it with a GRN, not an SRN.`];
   const st = lineServiceStats(po, line, d.id);
   if (!(d.serviceValue > 0)) errs.push('Service value must be greater than zero.');
   if (d.serviceValue > st.remaining + EPS) errs.push(`Service value ${money(d.serviceValue)} exceeds the remaining value ${money(st.remaining)} on line ${line.no}.`);
   if (!String(d.description || '').trim()) errs.push('Describe the service received.');
-  checkReceiptLink(po, d.milestoneId, null).forEach(e => errs.push(e));
+  checkReceiptLink(po, d.milestoneId, 'srn').forEach(e => errs.push(e));
   return errs;
 }
 
 /* ---------- milestones ---------- */
-function msGate(m, po) {
-  const label = recLabel(po);
-  if (!m.needsReceipt) return { ok: true, required: false, label, reason: '' };
-  const r = recOf(po, m.receiptId);
-  if (!r) return { ok: false, required: true, label, reason: `an accepted ${label} is required — none linked yet` };
-  const st = r.reversed ? 'Reversed' : r.status;
-  if (st === 'Accepted') return { ok: true, required: true, label, rec: r, reason: '' };
-  return { ok: false, required: true, label, rec: r, reason: `linked ${r.number} is ${st} (must be Accepted)` };
+/* Acceptance conditions are configured per milestone and are independent records:
+     needsDoc → an evidence document (e.g. "Commissioning Certificate") uploaded by the supplier and APPROVED with the milestone —
+                it lives on the milestone, never on a GRN / SRN, and no quantity is ever invented for it
+     needsGrn → accepted GRN(s) recording the real goods received (one or several, e.g. staged deliveries)
+     needsSrn → accepted SRN(s) recording the real service delivered
+   Any combination (or none) can be required. */
+const docTitleOf = m => m.docTitle || 'Supporting document';
+const docState = m => !m.doc || !(m.doc.files || []).length ? 'Not Uploaded' : m.doc.status;           // Not Uploaded | Pending Approval | Approved | Rejected
+const MS_STATES = ['Pending', 'In Progress', 'Submitted for Approval', 'Under Review', 'Approved', 'Rejected'];
+const msLocked = m => usage('milestone', m.id).value > EPS || ['Submitted for Approval', 'Under Review', 'Approved'].includes(m.status);
+function recCond(m, kind) {
+  const ids = (kind === 'grn' ? m.grnIds : m.srnIds) || [], L = kind.toUpperCase(), OKS = kind === 'grn' ? GRN_OK : SRN_OK;
+  const recs = ids.map(id => kind === 'grn' ? getGRN(id) : getSRN(id)).filter(Boolean);
+  const live = recs.filter(r => !r.reversed && r.status !== 'Rejected'), pending = live.filter(r => !OKS.includes(r.status)), good = live.filter(r => OKS.includes(r.status));
+  const ok = good.length > 0 && !pending.length, waiting = kind === 'grn' ? 'Pending Inspection' : 'Pending Acceptance';
+  const reason = ok ? '' : !recs.length ? `an accepted ${L} is required — none linked yet` : !live.length ? `every linked ${L} was rejected or reversed — link a valid ${L}` : `${pending.map(r => r.number).join(', ')} ${kind === 'grn' ? 'is still pending inspection' : 'is still pending acceptance'}`;
+  return { key: kind, ok, status: ok ? 'Accepted' : !recs.length ? 'None' : pending.length ? waiting : 'Rejected', title: `Accepted ${L}`, recs, reason };
 }
-/* Milestone lifecycle (mirrors the PO): Draft → Pending Approval → Approved → [receipt gate] → Completed. Only a Completed milestone whose gate is clear is billable. */
-const msEnt = (m, po) => (m.status === 'Completed' && msGate(m, po).ok) ? m.amount : 0;
+function msGate(m, po) {
+  const conds = [];
+  if (m.needsDoc) {
+    const st = docState(m), t = docTitleOf(m);
+    conds.push({ key: 'doc', ok: st === 'Approved', status: st, title: t,
+      reason: st === 'Approved' ? '' : st === 'Not Uploaded' ? `the ${t} has not been uploaded yet` : st === 'Rejected' ? `the ${t} was rejected${m.doc.rejectReason ? ' (' + m.doc.rejectReason + ')' : ''} — upload a corrected document` : `the ${t} is uploaded and awaiting approval` });
+  }
+  if (m.needsGrn) conds.push(recCond(m, 'grn'));
+  if (m.needsSrn) conds.push(recCond(m, 'srn'));
+  const unmet = conds.filter(c => !c.ok), recs = conds.flatMap(c => c.recs || []);
+  const label = [m.needsGrn ? 'GRN' : '', m.needsSrn ? 'SRN' : ''].filter(Boolean).join(' + ') || recLabel(po);
+  return { ok: !unmet.length, required: conds.length > 0, label, recs, rec: recs[0], conds, reason: unmet.map(c => c.reason).join(' and ') };
+}
+/* Eligible value = the milestone amount once it is APPROVED and every configured acceptance condition is satisfied */
+const msEnt = (m, po) => (m.status === 'Approved' && msGate(m, po).ok) ? m.amount : 0;
 function msBilling(m, po) {
   const u = usage('milestone', m.id), ent = msEnt(m, po);
   if (u.value >= m.amount - EPS && m.amount > 0) return 'Invoiced';
+  if (u.value > EPS) return ent > 0 ? 'Partially Invoiced' : 'Not Eligible';
   return ent > 0 ? 'Eligible' : 'Not Eligible';
 }
 /* percentage schedule → amounts; the last milestone absorbs rounding so the schedule always equals the PO value */
@@ -166,10 +195,12 @@ function sourceItems(po, ex) {
       const gate = msGate(m, po), ent = msEnt(m, po), u = usage('milestone', m.id, ex);
       let reason = '';
       if (m.status === 'Draft') reason = 'PO is not approved yet';
-      else if (m.status === 'Pending Approval') reason = 'Milestone is awaiting approval';
-      else if (m.status === 'Rejected') reason = 'Milestone was rejected';
-      else if (m.status === 'Approved') reason = gate.ok ? 'Approved — mark it complete to make it billable' : `Approved, but ${gate.reason}`;
-      else if (!gate.ok) reason = `Completed, but ${gate.reason}`;
+      else if (m.status === 'Pending') reason = 'Milestone work has not started';
+      else if (m.status === 'In Progress') reason = 'Milestone is in progress — not submitted for approval yet';
+      else if (m.status === 'Submitted for Approval') reason = 'Submitted — waiting for the approver to review';
+      else if (m.status === 'Under Review') reason = 'Under review by the approver';
+      else if (m.status === 'Rejected') reason = `Rejected${m.rejectReason ? ' (' + m.rejectReason + ')' : ''} — the supplier must resubmit`;
+      else if (!gate.ok) reason = `Approved, but ${gate.reason}`;
       else if (u.value >= m.amount - EPS) reason = `Fully invoiced${u.invs.length ? ' on ' + u.invs.map(invRef).join(', ') : ''}`;
       items.push({ kind: 'milestone', refId: m.id, ref: m, label: m.code, name: m.name, status: m.status, entQty: null, entValue: ent, usedQty: 0, usedValue: u.value, committedValue: u.committedValue, reservedValue: u.reservedValue,
         availQty: null, availValue: r2(Math.max(0, ent - u.value)), eligible: ent > 0 && ent - u.value > EPS, reason, invs: u.invs });
@@ -187,7 +218,7 @@ function sourceItems(po, ex) {
     });
     return items;
   }
-  if (isGoods(po)) grnsOf(po).forEach(g => {
+  if (hasGoods(po)) grnsOf(po).forEach(g => {
     const line = lineOf(po, g.lineId), ent = grnEnt(g), u = usage('grn', g.id, ex), price = line.price;
     let reason = '';
     if (g.reversed) reason = 'Receipt reversed — entitlement withdrawn';
@@ -199,7 +230,7 @@ function sourceItems(po, ex) {
       committedQty: u.committedQty, reservedQty: u.reservedQty, committedValue: r2(u.committedQty * price), reservedValue: r2(u.reservedQty * price),
       availQty, availValue: r2(availQty * price), eligible: availQty > EPS, reason, invs: u.invs });
   });
-  else srnsOf(po).forEach(s => {
+  if (hasServices(po)) srnsOf(po).forEach(s => {
     const line = lineOf(po, s.lineId), ent = srnEnt(s), u = usage('srn', s.id, ex);
     let reason = '';
     if (s.status === 'Rejected') reason = 'SRN rejected — nothing invoice-eligible';
@@ -213,17 +244,16 @@ function sourceItems(po, ex) {
 
 /* ---------- PO summary: received / accepted / invoiced / approved / paid are distinct ---------- */
 function poSummary(po) {
-  const value = poNet(po), invs = invsOf(po), live = invs.filter(isLive);
+  const value = poNet(po), invs = invsOf(po).filter(i => !i.reversed), live = invs.filter(isLive);
   const items = sourceItems(po);
   const invoiced = sum(live, i => i.net);
   const approved = sum(invs.filter(i => APPROVED.includes(i.status)), i => i.net);
   const paid = sum(invs.filter(i => i.status === 'Paid'), i => i.net);
   const reserved = sum(live.filter(i => !APPROVED.includes(i.status)), i => i.net);
   let received = 0;
-  if (po.billingMethod === 'Milestone') received = sum(msOf(po).filter(m => m.status === 'Completed'), m => m.amount);
+  if (po.billingMethod === 'Milestone') received = sum(msOf(po).filter(m => ['Submitted for Approval', 'Under Review', 'Approved'].includes(m.status)), m => m.amount);
   else if (poCertified(po)) received = sum(claimsOf(po).filter(c => ['Submitted', 'Certified'].includes(c.status)), c => claimView(c).current);
-  else if (isGoods(po)) received = sum(grnsOf(po).filter(g => !g.reversed), g => g.received * lineOf(po, g.lineId).price);
-  else received = sum(srnsOf(po), s => s.serviceValue);
+  else received = sum(grnsOf(po).filter(g => !g.reversed), g => g.received * lineOf(po, g.lineId).price) + sum(srnsOf(po), s => s.serviceValue);
   const accepted = sum(items, x => x.entValue);
   const remaining = (po.billingMethod === 'Standard') ? r2(Math.max(0, accepted - invoiced)) : sum(items, x => x.availValue);
   const gs = grnsOf(po);
@@ -231,7 +261,7 @@ function poSummary(po) {
     value, received, accepted, invoiced, approved, paid, reserved, remaining, remainingPO: r2(value - invoiced),
     acceptedQty: sum(gs, grnEnt), receivedQty: sum(gs.filter(g => !g.reversed), g => g.received), rejectedQty: sum(gs.filter(g => !g.reversed), g => g.rejected),
     invoicedQty: sum(live.flatMap(i => i.allocs.filter(a => a.kind === 'grn')), a => a.qty),
-    remainingPOQty: isGoods(po) ? sum(po.lines, l => lineReceiptStats(po, l).remaining) : 0,
+    remainingPOQty: sum(goodsLines(po), l => lineReceiptStats(po, l).remaining),
     items,
   };
 }
@@ -239,13 +269,13 @@ function poSummary(po) {
 /* ---------- PO stage (drives the status pill and the stage tracker) ---------- */
 function poStage(po) {
   const s = po.status === 'Approved' ? poSummary(po) : null;
-  const recName = po.billingMethod === 'Milestone' ? 'Milestone' : poCertified(po) ? 'Progress' : isGoods(po) ? 'GRN' : 'SRN';
+  const recName = po.billingMethod === 'Milestone' ? 'Milestone' : poCertified(po) ? 'Progress' : recLabel(po);
   const steps = [
     { t: 'PO created', pending: 'Draft — not submitted', next: 'Submit the PO for approval' },
     { t: 'PO approved', pending: 'Approval Pending', next: 'Procurement Manager approves the PO' },
-    { t: po.billingMethod === 'Milestone' ? 'Milestone completed' : poCertified(po) ? 'Progress certified' : isGoods(po) ? 'Goods received' : 'Service accepted',
-      pending: po.billingMethod === 'Milestone' ? 'Milestone Completion Pending' : poCertified(po) ? 'Progress Certification Pending' : isGoods(po) ? 'Goods Receipt Pending' : 'Service Receipt Pending',
-      next: po.billingMethod === 'Milestone' ? 'Approve a milestone, clear its receipt check, then mark it complete' : poCertified(po) ? 'Vendor claims progress and buyer certifies it' : isGoods(po) ? 'Receive and accept goods from vendor' : 'Receive and accept services from vendor' },
+    { t: po.billingMethod === 'Milestone' ? 'Milestone approved' : poCertified(po) ? 'Progress certified' : isGoods(po) ? 'Goods received' : po.type === 'Mixed' ? 'Goods / service accepted' : 'Service accepted',
+      pending: po.billingMethod === 'Milestone' ? 'Milestone Approval Pending' : poCertified(po) ? 'Progress Certification Pending' : isGoods(po) ? 'Goods Receipt Pending' : po.type === 'Mixed' ? 'Goods / Service Receipt Pending' : 'Service Receipt Pending',
+      next: po.billingMethod === 'Milestone' ? 'Supplier submits a milestone with its evidence; the approver approves it' : poCertified(po) ? 'Vendor claims progress and buyer certifies it' : isGoods(po) ? 'Receive and accept goods from vendor' : po.type === 'Mixed' ? 'Receive and accept goods and services from vendor' : 'Receive and accept services from vendor' },
     { t: 'Invoice submitted', pending: 'Invoice Pending', next: 'Vendor submits an invoice for the eligible value' },
     { t: 'Invoice approved', pending: 'Invoice Approval Pending', next: 'AP Manager approves the invoice' },
     { t: 'Payment made', pending: 'Payment Pending', next: 'Post to AP and pay the vendor' },
@@ -298,7 +328,7 @@ function allocErrors(inv) {
   const items = sourceItems(po, ex);
   if (po.billingMethod === 'Standard') {
     const accepted = sum(items, x => x.entValue);
-    if (accepted <= EPS) add('NOT_ELIGIBLE', `No accepted ${isGoods(po) ? 'goods' : 'service'} receipts exist against this PO. Receive and accept first — pending or rejected quantities are not invoice-eligible.`);
+    if (accepted <= EPS) add('NOT_ELIGIBLE', `No accepted ${recLabel(po)} receipts exist against this PO. Receive and accept first — pending or rejected quantities are not invoice-eligible.`);
     else if (net > 0 && net > accepted - otherLive + EPS) add('OVER_VALUE', `Invoice amount ${money(net)} exceeds the accepted receipt value still unbilled. Accepted receipts: ${money(accepted)}; already invoiced / reserved: ${money(otherLive)}; eligible: ${money(accepted - otherLive)}.`);
     return errs;
   }
@@ -316,10 +346,15 @@ function allocErrors(inv) {
     const byInv = it.invs.length ? it.invs.map(i => `${invRef(i)} (${i.status})`).join(', ') : '';
     if (a.kind === 'milestone') {
       const m = it.ref, gate = msGate(m, po);
-      if (m.status !== 'Completed') return add('MS_NOT_APPROVED', `Milestone ${m.code} is not invoice-eligible: status is "${m.status}". A milestone must be approved and marked complete before it can be invoiced; a passed due date does not make it eligible.`, it.label);
-      if (!gate.ok) return add('GATE', `Milestone ${m.code} is complete but cannot be invoiced yet: ${gate.reason}. Marking a milestone complete does not replace the ${gate.label}.`, it.label);
-      if (it.usedValue > EPS) return add('DUP_ALLOC', `Duplicate allocation blocked: milestone ${m.code} (${money(m.amount)}) is already invoiced on ${byInv}. Only one invoice is allowed per milestone.`, it.label);
-      if (Math.abs(a.value - m.amount) > EPS) return add('MS_FULL', `Milestone ${m.code} must be invoiced for its full amount (${money(m.amount)}). Requested: ${money(a.value)}.`, it.label);
+      if (m.status !== 'Approved') return add('MS_NOT_APPROVED', `Milestone ${m.code} is not invoice-eligible: status is "${m.status}". Only an approved milestone can be invoiced; a passed due date does not make it eligible.`, it.label);
+      if (!gate.ok) return add('GATE', `Milestone ${m.code} is approved but cannot be invoiced yet: ${gate.reason}. Approval does not replace the other acceptance conditions.`, it.label);
+      if (!m.allowPartial) {
+        if (it.usedValue > EPS) return add('DUP_ALLOC', `Duplicate allocation blocked: milestone ${m.code} (${money(m.amount)}) is already invoiced on ${byInv}. Only one invoice is allowed per milestone.`, it.label);
+        if (Math.abs(a.value - m.amount) > EPS) return add('MS_FULL', `Milestone ${m.code} must be invoiced for its full amount (${money(m.amount)}); partial invoicing is not enabled on it. Requested: ${money(a.value)}.`, it.label);
+      } else {
+        if (it.availValue <= EPS) return add('DUP_ALLOC', `Duplicate allocation blocked: milestone ${m.code} (${money(m.amount)}) is fully invoiced on ${byInv}.`, it.label);
+        if (a.value > it.availValue + EPS) return add('OVER_VALUE', `Invoice value exceeds the remaining balance of milestone ${m.code}. Approved ${money(it.entValue)}, already invoiced / reserved ${money(it.usedValue)}, remaining ${money(it.availValue)}. Requested: ${money(a.value)}.`, it.label);
+      }
     } else if (a.kind === 'claim') {
       const c = it.ref;
       if (c.status !== 'Certified') return add('NOT_ELIGIBLE', `${c.number} is not invoice-eligible: claim status is "${c.status}". Only certified progress can be invoiced.`, it.label);
@@ -352,7 +387,7 @@ function evaluateInvoice(inv) {
   const eligLabel = po.billingMethod === 'Milestone' ? 'Milestone eligibility' : poCertified(po) ? 'Certified progress eligibility' : `Receipt eligibility (${recLabel(po)})`;
   if (e1.length) C('elig', eligLabel, 'fail', e1.map(e => e.msg).join(' '));
   else if (po.billingMethod === 'Standard') C('elig', eligLabel, 'pass', `Accepted receipts of ${money(sum(sourceItems(po, inv.id), x => x.entValue))} are available on the PO (standard receipt-based matching, no allocation schedule).`);
-  else if (po.billingMethod === 'Milestone') C('elig', eligLabel, 'pass', `${refs.join(', ')} approved${inv.allocs.some(a => getMS(a.refId)?.needsReceipt) ? ` and the required ${recLabel(po)} accepted` : ` — no ${recLabel(po)} required for this milestone`}.`);
+  else if (po.billingMethod === 'Milestone') C('elig', eligLabel, 'pass', `${refs.join(', ')} approved — ${inv.allocs.some(a => msGate(getMS(a.refId), po).required) ? 'every configured acceptance condition (document approval / accepted GRN / accepted SRN) is satisfied' : 'no extra acceptance condition configured'}.`);
   else C('elig', eligLabel, 'pass', `${refs.join(', ')} accepted and unconsumed — pending and rejected quantities excluded.`);
   const e2 = by('OVER_QTY', 'OVER_VALUE', 'MS_FULL', 'NET');
   if (e2.length) C('qty', 'Quantity / value match', 'fail', e2.map(e => e.msg).join(' '));
@@ -383,7 +418,7 @@ const NO = (errors, msg) => ({ ok: false, errors: [].concat(errors), msg: msg ||
 /* ----- Purchase orders ----- */
 function validatePO(d, forSubmit) {
   const errs = [], v = d.lines.reduce((s, l) => s + (+l.qty || 0) * (+l.price || 0), 0);
-  if (!['Goods', 'Services'].includes(d.type)) errs.push('Select the PO type (Goods or Services).');
+  if (!['Goods', 'Services', 'Mixed'].includes(d.type)) errs.push('Select the PO type (Goods, Services or Mixed).');
   if (!d.supplierId) errs.push('Select a vendor.');
   if (!String(d.title || '').trim()) errs.push('Enter an order title.');
   if (!d.office) errs.push('Select the billing office.');
@@ -399,7 +434,14 @@ function validatePO(d, forSubmit) {
     if (l.price === '' || !(+l.price >= 0)) errs.push(`Line ${i + 1}: unit price is required.`);
   });
   if (!d.billingMethod) errs.push('Select a billing method.');
-  if (d.billingMethod === 'Progressive' && d.progressBasis === 'Certified' && d.type !== 'Services') errs.push('Certified work progress is only available on Services POs. Use accepted receipts (GRN) for goods.');
+  if (d.billingMethod === 'Progressive' && d.progressBasis === 'Certified' && d.type !== 'Services') errs.push('Certified work progress is only available on Services POs. Use accepted receipts (GRN / SRN) otherwise.');
+  const anyGoods = d.type === 'Goods' || (d.type === 'Mixed' && d.lines.some(l => l.kind !== 'Services')), anySvc = d.type === 'Services' || (d.type === 'Mixed' && d.lines.some(l => l.kind === 'Services'));
+  if (d.type === 'Mixed' && !(anyGoods && anySvc)) errs.push('A Mixed PO needs at least one goods line and one services line.');
+  if (d.billingMethod === 'Milestone') (d.milestones || []).forEach((m, i) => {
+    if (m.needsGrn && !anyGoods) errs.push(`M${i + 1}: a GRN requirement needs at least one goods line on the PO.`);
+    if (m.needsSrn && !anySvc) errs.push(`M${i + 1}: an SRN requirement needs at least one services line on the PO.`);
+    if (m.needsDoc && !String(m.docTitle || '').trim()) errs.push(`M${i + 1}: name the document that must be approved (e.g. Commissioning Certificate).`);
+  });
   if (forSubmit) {
     if (!(v > 0)) errs.push('PO value must be greater than zero.');
     if (d.billingMethod === 'Milestone') scheduleCheck(d.milestones, r2(v)).errors.forEach(e => errs.push('Milestone schedule: ' + e));
@@ -420,14 +462,14 @@ A.savePO = (d, submit) => {
     supplierId: d.supplierId, buyer: d.buyer || 'DICE Manufacturing Pvt Ltd', office: d.office, title: d.title.trim(), poDate: d.poDate, deliveryDate: d.deliveryDate, endDate: d.endDate || '',
     type: d.type, category: d.category, attachments: d.attachments || [], currency: CURRENCY, gstRate: +d.gstRate, billingMethod: d.billingMethod, progressBasis: d.billingMethod === 'Progressive' ? d.progressBasis : 'Receipt',
     overReceiptPct: po.overReceiptPct || 0, status: submit ? 'Pending Approval' : 'Draft',
-    lines: d.lines.map((l, i) => ({ id: l.id || uid('ln'), no: i + 1, desc: l.desc.trim(), qty: +l.qty, uom: l.uom, price: +l.price })),
+    lines: d.lines.map((l, i) => ({ id: l.id || uid('ln'), no: i + 1, desc: l.desc.trim(), qty: +l.qty, uom: l.uom, price: +l.price, kind: d.type === 'Mixed' ? (l.kind === 'Services' ? 'Services' : 'Goods') : d.type })),
   });
   db.milestones = db.milestones.filter(m => m.poId !== po.id);          // schedule is only editable while the PO is a draft
   if (po.billingMethod === 'Milestone') {
     const amts = milestoneAmounts(d.milestones, poNet(po));
     d.milestones.forEach((m, i) => db.milestones.push({
       id: m.id || uid('ms'), poId: po.id, seq: i + 1, code: `M${i + 1}`, name: m.name.trim(), pct: +m.pct, amount: amts[i], planned: m.planned || '',
-      status: 'Draft', needsReceipt: !!m.needsReceipt, receiptId: null, evidence: [], remarks: '', actualDate: '', approvedAt: '', rejectReason: '',
+      status: 'Draft', needsDoc: !!m.needsDoc, docTitle: m.needsDoc ? (String(m.docTitle || '').trim() || 'Supporting document') : '', needsGrn: !!m.needsGrn, needsSrn: !!m.needsSrn, allowPartial: !!m.allowPartial, doc: null, grnIds: [], srnIds: [], submissions: [], history: [], evidence: [], remarks: '', actualDate: '', approvedAt: '', rejectReason: '',
     }));
   }
   audit(po.id, po.number, isNew ? `PO created${submit ? ' and submitted for approval' : ' as draft'} — billing method ${po.billingMethod}.` : `PO ${submit ? 'submitted for approval' : 'saved as draft'} (billing method ${po.billingMethod}).`, 'po');
@@ -438,9 +480,9 @@ A.savePO = (d, submit) => {
 A.approvePO = id => {
   const po = getPO(id); if (!po || po.status !== 'Pending Approval') return NO('PO is not awaiting approval.');
   po.status = 'Approved';
-  msOf(po).forEach(m => { if (m.status === 'Draft') m.status = 'Pending Approval'; });
+  msOf(po).forEach(m => { if (m.status === 'Draft') { m.status = 'Pending'; (m.history = m.history || []).push({ at: nowISO(), by: actor(), role: db.meta.role, from: 'Draft', to: 'Pending', note: 'PO approved — milestone schedule approved with it' }); } });
   po.approvals.push({ at: nowISO(), by: actor(), action: 'Approved', note: '' });
-  audit(po.id, po.number, `PO approved. Now available for ${recLabel(po)}${po.billingMethod === 'Milestone' ? ' / milestone' : ''} and invoice selection.`, 'po');
+  audit(po.id, po.number, `PO approved. Now available for ${recLabel(po)}${po.billingMethod === 'Milestone' ? ' / milestone work' : ''} and invoice selection.`, 'po');
   save(); return OK(`${po.number} approved`);
 };
 A.rejectPO = (id, reason) => {
@@ -460,8 +502,8 @@ A.amendPO = (id, { lines, milestones, reason }) => {
     const o = lineOf(po, n.id), touched = grnsOf(po).some(g => g.lineId === o.id) || srnsOf(po).some(s => s.lineId === o.id) || invsOf(po).some(i => isLive(i));
     if (!(n.qty > 0) || !(n.price >= 0)) errs.push(`Line ${o.no}: enter a valid quantity and price.`);
     if (n.price !== o.price && touched) errs.push(`Line ${o.no}: unit price is locked because receipts or invoices already exist — historical amounts are never rewritten.`);
-    if (isGoods(po) && n.qty < lineReceiptStats(po, { ...o, qty: 0 }).active - EPS) errs.push(`Line ${o.no}: quantity cannot drop below the quantity already received/accepted (${fmtNum(lineReceiptStats(po, { ...o, qty: 0 }).active)}).`);
-    if (!isGoods(po) && n.qty * n.price < lineServiceStats(po, { ...o, qty: 1, price: 0 }).active - EPS) errs.push(`Line ${o.no}: value cannot drop below the service value already received (${money(lineServiceStats(po, o).active)}).`);
+    if (lineKind(po, o) === 'Goods' && n.qty < lineReceiptStats(po, { ...o, qty: 0 }).active - EPS) errs.push(`Line ${o.no}: quantity cannot drop below the quantity already received/accepted (${fmtNum(lineReceiptStats(po, { ...o, qty: 0 }).active)}).`);
+    if (lineKind(po, o) === 'Services' && n.qty * n.price < lineServiceStats(po, { ...o, qty: 1, price: 0 }).active - EPS) errs.push(`Line ${o.no}: value cannot drop below the service value already received (${money(lineServiceStats(po, o).active)}).`);
     if (n.qty !== o.qty) changes.push(`Line ${o.no} quantity ${fmtNum(o.qty)} → ${fmtNum(n.qty)}`);
     if (n.price !== o.price) changes.push(`Line ${o.no} price ${fmtNum(o.price)} → ${fmtNum(n.price)}`);
   });
@@ -471,9 +513,10 @@ A.amendPO = (id, { lines, milestones, reason }) => {
   let plan = null;
   if (po.billingMethod === 'Milestone') {
     const cur = msOf(po);
-    const locked = m => usage('milestone', m.id).value > EPS || ['Approved', 'Completed'].includes(m.status);
+    const locked = msLocked;
     const merged = cur.map(m => { const n = milestones.find(x => x.id === m.id); if (!n || locked(m)) return { ...m }; return { ...m, name: n.name, pct: +n.pct }; });
-    const added = milestones.filter(x => !x.id || String(x.id).startsWith('new')).filter(x => String(x.name || '').trim() && +x.pct > 0).map(x => ({ name: x.name, pct: +x.pct, planned: x.planned || '', needsReceipt: !!x.needsReceipt }));
+    const added = milestones.filter(x => !x.id || String(x.id).startsWith('new')).filter(x => String(x.name || '').trim() && +x.pct > 0).map(x => ({ name: x.name, pct: +x.pct, planned: x.planned || '', needsDoc: !!x.needsDoc, docTitle: x.docTitle || '', needsGrn: !!x.needsGrn, needsSrn: !!x.needsSrn, allowPartial: !!x.allowPartial }));
+    added.forEach(x => { if (x.needsGrn && !hasGoods(po)) errs.push(`New milestone "${x.name}": the PO has no goods lines, so it cannot require a GRN.`); if (x.needsSrn && !hasServices(po)) errs.push(`New milestone "${x.name}": the PO has no services lines, so it cannot require an SRN.`); });
     const all = [...merged, ...added];
     const chk = scheduleCheck(all.map(m => m.id && locked(m) ? { ...m, pct: m.amount / after * 100 } : m), after);
     chk.errors.forEach(e => errs.push('Amended schedule: ' + e));
@@ -489,8 +532,10 @@ A.amendPO = (id, { lines, milestones, reason }) => {
     free.forEach((m, i) => { m.amount = i === free.length - 1 ? r2(after - used) : r2(m.pct * after / 100); used = r2(used + m.amount); });
     cur.forEach(m => { const n = merged.find(x => x.id === m.id); if (!locked(m)) { if (m.name !== n.name || m.amount !== n.amount) changes.push(`${m.code} "${m.name}" amount ${money(m.amount)} → ${money(n.amount)}`); m.name = n.name; m.amount = n.amount; } });
     added.forEach(x => { const seq = msOf(po).length + 1; changes.push(`Added milestone M${seq} "${x.name}" ${money(x.amount)}`);
-      db.milestones.push({ id: uid('ms'), poId: po.id, seq, code: `M${seq}`, name: x.name, pct: x.pct, amount: x.amount, planned: x.planned, status: 'Pending Approval', needsReceipt: x.needsReceipt, receiptId: null, evidence: [], remarks: '', actualDate: '', approvedAt: '', rejectReason: '' }); });
+      db.milestones.push({ id: uid('ms'), poId: po.id, seq, code: `M${seq}`, name: x.name, pct: x.pct, amount: x.amount, planned: x.planned, status: 'Pending', needsDoc: x.needsDoc, docTitle: x.needsDoc ? (String(x.docTitle || '').trim() || 'Supporting document') : '', needsGrn: x.needsGrn, needsSrn: x.needsSrn, allowPartial: x.allowPartial, doc: null, grnIds: [], srnIds: [], submissions: [], history: [{ at: nowISO(), by: actor(), role: db.meta.role, from: '', to: 'Pending', note: `Added by PO amendment v${po.version + 1}` }], evidence: [], remarks: '', actualDate: '', approvedAt: '', rejectReason: '' }); });
     msOf(po).forEach(m => { m.pct = after ? r2(m.amount / after * 100) : 0; });
+    /* rescheduling: due dates may move at any time (amounts of locked milestones never do); every move is logged */
+    cur.forEach(m => { const n = milestones.find(x => x.id === m.id); if (n && n.planned && n.planned !== m.planned) { changes.push(`${m.code} due date ${fmtD(m.planned)} → ${fmtD(n.planned)}`); (m.history = m.history || []).push({ at: nowISO(), by: actor(), role: db.meta.role, from: m.status, to: m.status, note: `Rescheduled ${fmtD(m.planned)} → ${fmtD(n.planned)} (PO amendment v${po.version + 1}: ${reason})` }); m.planned = n.planned; } });
   }
   po.version += 1;
   po.amendments.unshift({ id: uid('am'), version: po.version, at: nowISO(), by: actor(), reason, changes, valueBefore: before, valueAfter: poNet(po) });
@@ -573,48 +618,84 @@ A.rejectSRN = (id, reason) => {
   s.status = 'Rejected'; s.rejectReason = reason; audit(s.poId, s.number, `${s.number} rejected: ${reason}`, 'bad'); save(); return OK(`${s.number} rejected`);
 };
 
-/* ----- Milestones ----- */
-A.msApprove = id => {
-  const m = getMS(id), po = m && getPO(m.poId); if (!m || !po) return NO('Milestone not found.');
+/* ----- Milestones: Pending → In Progress → Submitted for Approval → Under Review → Approved | Rejected (→ resubmit) ----- */
+const msRef = (po, m) => `${po.number} / ${m.code}`;
+function msMove(m, po, to, note, kind) {
+  (m.history = m.history || []).push({ at: nowISO(), by: actor(), role: db.meta.role, from: m.status, to, note: note || '' });
+  m.status = to; audit(po.id, msRef(po, m), `Milestone ${m.code} "${m.name}" → ${to}${note ? ': ' + note : ''}.`, kind || 'ms');
+}
+/* segregation of duties (PRD UC-19): whoever submitted the evidence cannot review, approve or reject it. Demo Admin acts for every role and is exempt. */
+const msSod = m => db.meta.role !== 'admin' && m.submittedRole === db.meta.role ? NO(`Segregation of duties: ${m.submittedBy} submitted ${m.code}, so the same role cannot review or decide on it. Switch to another approver role.`) : null;
+const msCtx = id => { const m = getMS(id), po = m && getPO(m.poId); return { m, po }; };
+A.msStart = id => {
+  const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
   if (po.status !== 'Approved') return NO('The PO must be approved first.');
-  if (!['Pending Approval', 'Rejected'].includes(m.status)) return NO(`${m.code} is ${m.status} — it is not awaiting approval.`);
-  m.status = 'Approved'; m.approvedAt = nowISO(); m.approvedBy = actor(); m.rejectReason = ''; const g = msGate(m, po);
-  audit(po.id, `${po.number} / ${m.code}`, `Milestone ${m.code} approved.${g.required ? (g.ok ? ` The ${g.label} is accepted — it can be marked complete.` : ` Next: ${g.reason}, then mark it complete.`) : ' Next: mark it complete.'}`, 'ok'); save();
-  return OK(g.ok ? `${m.code} approved — you can now mark it complete` : `${m.code} approved — ${g.reason}`);
+  if (m.status !== 'Pending') return NO(`${m.code} is ${m.status} — only a Pending milestone can be started.`);
+  msMove(m, po, 'In Progress', 'work started'); m.startedAt = nowISO(); m.startedBy = actor(); save(); return OK(`${m.code} is now in progress`);
+};
+/* files = the evidence the supplier uploads (mandatory when the milestone requires a document) */
+A.msSubmit = (id, { actualDate, remarks, files } = {}) => {
+  const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
+  if (po.status !== 'Approved') return NO('The PO must be approved first.');
+  if (!['Pending', 'In Progress', 'Rejected'].includes(m.status)) return NO(`${m.code} is ${m.status} — it cannot be submitted now.`);
+  const errs = [], fl = files || [];
+  if (!actualDate) errs.push('Completion date is required.');
+  if (m.needsDoc && !fl.length) errs.push(`Upload the ${docTitleOf(m)} — it is mandatory for ${m.code}.`);
+  if (errs.length) return NO(errs);
+  const v = (m.submissions || []).length + 1, resub = m.status === 'Rejected';
+  (m.submissions = m.submissions || []).push({ v, at: nowISO(), by: actor(), role: db.meta.role, files: [...fl], remarks: remarks || '', actualDate, status: 'Submitted' });
+  Object.assign(m, { actualDate, remarks: remarks || '', evidence: [...fl], rejectReason: '', submittedBy: actor(), submittedRole: db.meta.role, submittedAt: nowISO(), reviewedBy: '', reviewedAt: '' });
+  if (m.needsDoc) m.doc = { files: [...fl], remarks: remarks || '', status: 'Pending Approval', version: v, uploadedBy: actor(), uploadedRole: db.meta.role, uploadedAt: nowISO() };
+  msMove(m, po, 'Submitted for Approval', `${resub ? 'resubmitted' : 'submitted'} (submission ${v}) with ${fl.length} file(s)${m.needsDoc ? ' incl. the ' + docTitleOf(m) : ''}`);
+  save(); return OK(`${m.code} ${resub ? 'resubmitted' : 'submitted'} for approval`);
+};
+A.msStartReview = id => {
+  const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
+  if (m.status !== 'Submitted for Approval') return NO(`${m.code} is ${m.status} — there is nothing waiting to be reviewed.`);
+  const sod = msSod(m); if (sod) return sod;
+  m.reviewedBy = actor(); m.reviewedAt = nowISO(); msMove(m, po, 'Under Review', 'review started'); save(); return OK(`${m.code} is now under review`);
+};
+A.msApprove = (id, note) => {
+  const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
+  if (po.status !== 'Approved') return NO('The PO must be approved first.');
+  if (!['Submitted for Approval', 'Under Review'].includes(m.status)) return NO(`${m.code} is ${m.status} — only a submitted milestone can be approved.`);
+  const sod = msSod(m); if (sod) return sod;
+  if (!m.reviewedBy) { m.reviewedBy = actor(); m.reviewedAt = nowISO(); }
+  m.approvedAt = nowISO(); m.approvedBy = actor(); m.rejectReason = '';
+  const last = (m.submissions || [])[(m.submissions || []).length - 1]; if (last) Object.assign(last, { status: 'Approved', decidedBy: actor(), decidedAt: nowISO() });
+  if (m.needsDoc && m.doc) Object.assign(m.doc, { status: 'Approved', decidedBy: actor(), decidedAt: nowISO(), rejectReason: '' });
+  const g = msGate(m, po);
+  msMove(m, po, 'Approved', `${note ? note + ' — ' : ''}${g.ok ? money(m.amount) + ' is now invoice-eligible' : 'still blocked for invoicing: ' + g.reason}`, 'ok'); save();
+  return OK(g.ok ? `${m.code} approved — ${money(m.amount)} is now invoice-eligible` : `${m.code} approved — invoicing stays blocked until: ${g.reason}`);
 };
 A.msReject = (id, reason) => {
-  const m = getMS(id), po = m && getPO(m.poId); if (!m || m.status !== 'Pending Approval') return NO('Milestone is not awaiting approval.');
+  const { m, po } = msCtx(id); if (!m || !po) return NO('Milestone not found.');
+  if (!['Submitted for Approval', 'Under Review'].includes(m.status)) return NO(`${m.code} is ${m.status} — only a submitted milestone can be rejected.`);
   if (!String(reason || '').trim()) return NO('A rejection reason is required.');
-  m.status = 'Rejected'; m.rejectReason = reason; audit(po.id, `${po.number} / ${m.code}`, `Milestone ${m.code} rejected: ${reason}`, 'bad'); save(); return OK(`${m.code} rejected`);
+  const sod = msSod(m); if (sod) return sod;
+  const last = (m.submissions || [])[(m.submissions || []).length - 1]; if (last) Object.assign(last, { status: 'Rejected', decidedBy: actor(), decidedAt: nowISO(), reason });
+  if (m.needsDoc && m.doc) Object.assign(m.doc, { status: 'Rejected', decidedBy: actor(), decidedAt: nowISO(), rejectReason: reason });
+  m.rejectReason = reason; msMove(m, po, 'Rejected', reason, 'bad'); save(); return OK(`${m.code} rejected — the supplier can resubmit`);
 };
-/* mark an APPROVED milestone complete — allowed only once its required GRN / SRN is accepted; completion is what makes it billable */
-A.msComplete = (id, { actualDate, remarks, evidence } = {}) => {
-  const m = getMS(id), po = m && getPO(m.poId); if (!m || !po) return NO('Milestone not found.');
-  if (po.status !== 'Approved') return NO('The PO must be approved first.');
-  if (m.status !== 'Approved') return NO(m.status === 'Completed' ? `${m.code} is already complete.` : `${m.code} must be approved before it can be marked complete (status: ${m.status}).`);
-  const g = msGate(m, po); if (!g.ok) return NO(`${m.code} cannot be completed yet: ${g.reason}.`);
-  if (!actualDate) return NO('Completion date is required.');
-  Object.assign(m, { status: 'Completed', actualDate, remarks: remarks || '', evidence: [...(evidence || [])], completedBy: actor(), completedAt: nowISO() });
-  audit(po.id, `${po.number} / ${m.code}`, `Milestone ${m.code} "${m.name}" marked complete — ${money(m.amount)} is now invoice-eligible and counts toward the PO's accepted value.`, 'ok'); save();
-  return OK(`${m.code} completed — ${money(m.amount)} is now invoice-eligible`);
-};
-/* link (or unlink with an empty receiptId) the GRN / SRN that gates a milestone — one receipt supports one milestone */
+/* link a GRN / SRN to a milestone (a milestone may have several; one receipt backs only one milestone) */
 A.msLinkReceipt = (msId, recId, quiet) => {
-  const m = getMS(msId), po = m && getPO(m.poId); if (!m) return NO('Milestone not found.');
-  const label = recLabel(po);
-  if (!m.needsReceipt) return NO(`${m.code} does not require a ${label}.`);
-  if (usage('milestone', m.id).value > EPS) return NO(`${m.code} is already invoiced — its ${label} link can no longer change.`);
-  let r = null;
-  if (recId) {
-    r = recOf(po, recId);
-    if (!r || r.poId !== po.id) return NO(`Select a ${label} that belongs to this PO.`);
-    const other = db.milestones.find(x => x.id !== m.id && x.receiptId === r.id);
-    if (other) return NO(`${r.number} is already linked to ${other.code}. A receipt can support only one milestone.`);
-  }
-  const prev = recOf(po, m.receiptId); if (prev) prev.milestoneId = null;
-  m.receiptId = r ? r.id : null; if (r) r.milestoneId = m.id;
-  audit(po.id, `${po.number} / ${m.code}`, r ? `Milestone ${m.code} linked to ${r.number} (${r.reversed ? 'Reversed' : r.status}).` : `${label} link removed from ${m.code}.`, 'ms');
-  if (!quiet) save(); return OK(r ? `Linked ${r.number} to ${m.code}` : `${label} link removed`);
+  const { m, po } = msCtx(msId); if (!m) return NO('Milestone not found.');
+  const g = getGRN(recId), sn = g ? null : getSRN(recId), r = g || sn, kind = g ? 'grn' : 'srn', L = kind.toUpperCase();
+  if (!r || r.poId !== po.id) return NO(`Select a GRN / SRN that belongs to this PO.`);
+  if (!(kind === 'grn' ? m.needsGrn : m.needsSrn)) return NO(`${m.code} is not configured to require a ${L}.`);
+  if (r.milestoneId && r.milestoneId !== m.id) return NO(`${r.number} is already linked to ${getMS(r.milestoneId)?.code || 'another milestone'}. A receipt can support only one milestone.`);
+  const list = kind === 'grn' ? (m.grnIds = m.grnIds || []) : (m.srnIds = m.srnIds || []);
+  if (list.includes(r.id)) return NO(`${r.number} is already linked to ${m.code}.`);
+  list.push(r.id); r.milestoneId = m.id;
+  audit(po.id, msRef(po, m), `Milestone ${m.code} linked to ${r.number} (${r.reversed ? 'Reversed' : r.status}).`, 'ms');
+  if (!quiet) save(); return OK(`Linked ${r.number} to ${m.code}`);
+};
+A.msUnlinkReceipt = (msId, recId) => {
+  const { m, po } = msCtx(msId); if (!m) return NO('Milestone not found.');
+  if (usage('milestone', m.id).value > EPS) return NO(`${m.code} already has invoices against it — its receipts can no longer be unlinked.`);
+  const r = getGRN(recId) || getSRN(recId); if (!r) return NO('Receipt not found.');
+  m.grnIds = (m.grnIds || []).filter(x => x !== recId); m.srnIds = (m.srnIds || []).filter(x => x !== recId); r.milestoneId = null;
+  audit(po.id, msRef(po, m), `${r.number} unlinked from milestone ${m.code}.`, 'ms'); save(); return OK(`${r.number} unlinked`);
 };
 
 /* ----- Certified progress claims (Services POs, tracked at PO level) ----- */
@@ -727,6 +808,15 @@ A.payInvoice = id => {
   const inv = getInv(id); if (!inv || inv.status !== 'Posted') return NO('Only posted invoices can be marked as paid.');
   db.seq.pay += 1; inv.ap.paidAt = nowISO(); inv.ap.payRef = `DEMO-PAY-${pad(db.seq.pay, 4)}`;
   setStatus(inv, 'Paid', 'Marked paid for demo'); audit(inv.poId, invRef(inv), `${invRef(inv)} marked as paid (demo only — no bank payment executed), ref ${inv.ap.payRef}.`, 'ok'); save(); return OK(`${invRef(inv)} marked paid (demo)`);
+};
+/* Posted / paid invoices are never deleted: a reversal issues a full credit note and RELEASES the allocation back to the receipt / milestone balance (PRD §12.2: Committed → Reversed) */
+A.reverseInvoice = (id, reason) => {
+  const inv = getInv(id); if (!inv || !['Posted', 'Paid'].includes(inv.status) || inv.reversed) return NO('Only a posted or paid invoice that has not been reversed can be reversed. Earlier invoices are cancelled or rejected instead.');
+  if (!String(reason || '').trim()) return NO('A reversal reason is required.');
+  const amt = payable(inv); if (amt > EPS) db.adjustments.push({ id: uid('adj'), invoiceId: inv.id, type: 'Credit', amount: amt, reason: `Reversal: ${reason}`, at: nowISO(), by: actor() });
+  inv.reversed = { at: nowISO(), by: actor(), reason }; inv.history.push({ at: nowISO(), by: actor(), from: inv.status, to: inv.status + ' (reversed)', note: reason });
+  inv.allocs.forEach(a => audit(inv.poId, invRef(inv), `Allocation reversed: ${allocText(a)} returned to the eligible balance (${invRef(inv)} reversed by credit note — ${reason}).`, 'alloc'));
+  audit(inv.poId, invRef(inv), `${invRef(inv)} reversed via credit note of ${money(amt)}: ${reason}.`, 'bad'); save(); return OK(`${invRef(inv)} reversed — allocations released`);
 };
 A.addAdjustment = (id, { type, amount, reason }) => {
   const inv = getInv(id); if (!inv || !APPROVED.includes(inv.status)) return NO('Adjustments apply to approved, posted or paid invoices.');

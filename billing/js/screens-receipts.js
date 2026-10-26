@@ -1,27 +1,31 @@
 /* =====================================================================
    screens-receipts.js — GRN (goods) and SRN (services): drawers, detail, lists
-   A Goods PO only ever gets GRNs; a Services PO only ever gets SRNs.
+   Goods lines are received with GRNs, service lines with SRNs (a Mixed PO has both). Milestone evidence documents are separate records.
    ===================================================================== */
 const approvedPOs = filter => db.pos.filter(p => p.status === 'Approved' && (!filter || filter(p)));
 const grnStatus = g => g.reversed ? 'Reversed' : g.status;
 /* milestones on this PO that can still be backed by a receipt */
-const gatedMilestones = po => po.billingMethod === 'Milestone' ? msOf(po).filter(m => m.needsReceipt && usage('milestone', m.id).value <= EPS) : [];
+const gatedMilestones = (po, kind) => po.billingMethod === 'Milestone' ? msOf(po).filter(m => (kind === 'grn' ? m.needsGrn : m.needsSrn) && m.status !== 'Draft') : [];
 
 /* ================================================================ tables on the PO page */
 const invIdsOf = (kind, id) => { const l = allocsOn(kind, id); return l.length ? [...new Set(l.map(x => x.inv))].map(invLink).join(', ') : '-'; };
-function rcTab(po, noInv) {
-  const g = isGoods(po), N = g ? 'GRN' : 'SRN', list = g ? grnsOf(po) : srnsOf(po), kind = g ? 'grn' : 'srn';
+function rcSection(po, kind) {
+  const g = kind === 'grn', N = g ? 'GRN' : 'SRN', list = g ? grnsOf(po) : srnsOf(po);
   const pend = list.filter(x => g ? x.status === 'Pending Inspection' : x.status === 'Pending Acceptance'), past = list.filter(x => !pend.includes(x));
   const open = x => `data-act="rc-open" data-kind="${kind}" data-id="${x.id}"`;
   const itemName = x => g ? esc(lineOf(po, x.lineId).desc) : esc(x.description);
   const create = po.status === 'Approved' ? (g ? gbtn('grn.create', 'grn-new', 'Create GRN', { cls: 'btn-primary', data: { po: po.id }, icn: 'plus' }) : gbtn('srn.create', 'srn-new', 'Create SRN', { cls: 'btn-primary', data: { po: po.id }, icn: 'plus' })) : '';
-  const invs = invsOf(po);
+  const msOfRec = x => x.milestoneId && getMS(x.milestoneId) ? esc(getMS(x.milestoneId).code) : '—';
   return `<div class="boxed" style="margin-top:22px"><div class="boxed-h"><h3>Pending ${N} Items :-</h3><span class="spacer"></span>${create}</div>
     <table class="tbl sm"><thead><tr><th>DETAILS</th><th>DATE</th><th class="right">${g ? 'QUANTITY' : 'SERVICE VALUE'}</th><th>MILESTONE</th><th>STATUS</th><th></th></tr></thead><tbody>
-    ${pend.map(x => `<tr class="band click" ${open(x)}><td><b>${itemName(x)}</b><div class="sub">Notes: ${esc(x.remarks || '—')}</div><div class="sub">${N}: ${x.number}</div><div class="sub">Vendor: ${esc(getSup(po.supplierId).name)}</div></td><td>${fmtD(x.date)}</td><td class="num">${g ? `${fmtNum(x.received)} / ${esc(lineOf(po, x.lineId).uom)}` : money(x.serviceValue)}</td><td>${x.milestoneId ? esc(getMS(x.milestoneId).code) : '—'}</td><td>${sb(x.status)}</td><td class="act"><button class="btn-view" ${open(x)}>${icon('open', 12, 2)}View</button></td></tr>`).join('') || `<tr><td colspan="6" class="empty" style="padding:26px 0;font-weight:600;color:var(--text)">No Pending ${g ? 'Grn' : 'Srn'}</td></tr>`}</tbody></table>
+    ${pend.map(x => `<tr class="band click" ${open(x)}><td><b>${itemName(x)}</b><div class="sub">Notes: ${esc(x.remarks || '—')}</div><div class="sub">${N}: ${x.number}</div><div class="sub">Vendor: ${esc(getSup(po.supplierId).name)}</div></td><td>${fmtD(x.date)}</td><td class="num">${g ? `${fmtNum(x.received)} / ${esc(lineOf(po, x.lineId).uom)}` : money(x.serviceValue)}</td><td>${msOfRec(x)}</td><td>${sb(x.status)}</td><td class="act"><button class="btn-view" ${open(x)}>${icon('open', 12, 2)}View</button></td></tr>`).join('') || `<tr><td colspan="6" class="empty" style="padding:26px 0;font-weight:600;color:var(--text)">No Pending ${g ? 'Grn' : 'Srn'}</td></tr>`}</tbody></table>
     <h3 style="margin:26px 0 8px;font-size:15px">Past ${N} Items :-</h3>
     <table class="tbl sm"><thead><tr><th>${N} ID</th><th>ITEM</th><th>DATE</th><th class="right">${g ? 'DELIVERED' : 'SERVICE VALUE'}</th><th class="right">ACCEPTED</th><th>INVOICE ID</th><th>MILESTONE</th><th>STATUS</th><th></th></tr></thead><tbody>
-    ${past.map(x => `<tr class="band click" ${open(x)}><td><b>${x.number}</b></td><td>${itemName(x)}</td><td>${fmtD(x.date)}</td><td class="num">${g ? fmtNum(x.received) : fmtNum(x.serviceValue)}</td><td class="num">${g ? fmtNum(x.accepted) : fmtNum(srnEnt(x))}</td><td>${invIdsOf(kind, x.id)}</td><td>${x.milestoneId ? esc(getMS(x.milestoneId).code) : '—'}</td><td>${sb(g ? grnStatus(x) : x.status)}</td><td class="act"><button class="btn-view" ${open(x)}>${icon('open', 12, 2)}View</button></td></tr>`).join('') || emptyRow(9, 'No past receipts yet.')}</tbody></table></div>${noInv ? '' : `
+    ${past.map(x => `<tr class="band click" ${open(x)}><td><b>${x.number}</b></td><td>${itemName(x)}</td><td>${fmtD(x.date)}</td><td class="num">${g ? fmtNum(x.received) : fmtNum(x.serviceValue)}</td><td class="num">${g ? fmtNum(x.accepted) : fmtNum(srnEnt(x))}</td><td>${invIdsOf(kind, x.id)}</td><td>${msOfRec(x)}</td><td>${sb(g ? grnStatus(x) : x.status)}</td><td class="act"><button class="btn-view" ${open(x)}>${icon('open', 12, 2)}View</button></td></tr>`).join('') || emptyRow(9, 'No past receipts yet.')}</tbody></table></div>`;
+}
+function rcTab(po, noInv) {
+  const invs = invsOf(po);
+  return `${hasGoods(po) ? rcSection(po, 'grn') : ''}${hasServices(po) ? rcSection(po, 'srn') : ''}${noInv ? '' : `
   <div class="sec" style="margin-top:34px;font-size:22px;font-weight:500">Invoices ${po.status === 'Approved' ? `<button class="plus-circle" data-act="inv-new" data-po="${po.id}" title="Submit Invoice">${icon('plus', 18, 2.4)}</button>` : ''}</div>
   <div class="tbl-wrap"><table class="tbl sm"><thead><tr><th>INVOICE</th><th>BILL NO.</th><th>DATE</th><th class="right">BASE</th><th class="right">TOTAL</th><th>STATUS</th><th></th></tr></thead><tbody>${invs.map(i => `<tr class="band click" data-act="inv-view" data-id="${i.id}"><td><b>${invRef(i)}</b></td><td>${esc(i.number)}</td><td>${fmtD(i.date)}</td><td class="num">${fmtNum(i.net)}</td><td class="num">${fmtNum(i.gross)}</td><td>${sb(i.status)}</td><td class="act"><button class="btn-view" data-act="inv-view" data-id="${i.id}">${icon('open', 12, 2)}View</button></td></tr>`).join('') || emptyRow(7, 'No invoices yet.')}</tbody></table></div>`}`;
 }
@@ -33,19 +37,19 @@ function openGrnPanel(poId, msId) {
   openPanel({ key: 'grn', title: 'GRN', sub: 'Record the goods delivered by the vendor', init: () => ({ poId: poId || '', fixed: !!poId, date: todayISO(), remarks: '', attachments: [], milestoneId: msId || '', rows: {} }), body: grnBody, foot: grnFoot, derive: grnDerive });
 }
 function grnBody() {
-  const f = ui.f, po = getPO(f.poId), pos = approvedPOs(isGoods);
+  const f = ui.f, po = getPO(f.poId), pos = approvedPOs(hasGoods);
   let h = '';
   if (f.fixed && po) h += `<div class="field"><label>Purchase order</label><div class="ro"><b style="margin-right:8px">${esc(po.number)}</b> ${esc(getSup(po.supplierId).name)}</div></div>`;
-  else h += `<div class="field"><label>Purchase order <span class="req">*</span></label><select class="input" data-f="poId" data-r data-hook="rcpo"><option value="">Select an approved goods PO</option>${opt(pos.map(p => [p.id, `${p.number} — ${getSup(p.supplierId).name}`]), f.poId)}</select><div class="fhint">Only approved Goods POs are listed. Services POs use an SRN.</div></div>`;
+  else h += `<div class="field"><label>Purchase order <span class="req">*</span></label><select class="input" data-f="poId" data-r data-hook="rcpo"><option value="">Select an approved PO with goods lines</option>${opt(pos.map(p => [p.id, `${p.number} — ${getSup(p.supplierId).name}`]), f.poId)}</select><div class="fhint">Only approved POs with goods lines are listed (service lines use an SRN).</div></div>`;
   if (!po) return h + '<div class="empty-state">Select a PO to enter the delivered quantities.</div>';
-  const gm = gatedMilestones(po);
+  const gm = gatedMilestones(po, 'grn');
   h += `<div class="sec-h">GRN Items</div><div class="tbl-wrap"><table class="tbl sm"><thead><tr><th>Id</th><th>Details</th><th class="right">Price</th><th class="right">Available Quantity / Unit</th><th class="right">Delivered</th><th class="right">Rejected</th></tr></thead><tbody>
-    ${po.lines.map((l, i) => { const st = lineReceiptStats(po, l); return `<tr><td>${i + 1}</td><td class="strong">${esc(l.desc)}</td><td class="num">${money(l.price)}</td><td class="num">${fmtNum(st.remaining)} / ${esc(l.uom)}</td>
+    ${goodsLines(po).map((l, i) => { const st = lineReceiptStats(po, l); return `<tr><td>${i + 1}</td><td class="strong">${esc(l.desc)}</td><td class="num">${money(l.price)}</td><td class="num">${fmtNum(st.remaining)} / ${esc(l.uom)}</td>
       <td><input class="input sm num" style="width:96px" type="number" min="0" step="any" data-t="num" data-f="rows.${l.id}.received" value="${esc(f.rows[l.id]?.received ?? '')}" placeholder="0"></td>
       <td><input class="input sm num" style="width:84px" type="number" min="0" step="any" data-t="num" data-f="rows.${l.id}.rejected" value="${esc(f.rows[l.id]?.rejected ?? '')}" placeholder="0"></td></tr>`; }).join('')}</tbody></table></div>
     <div id="rc-val" style="margin-top:12px"></div>
     <div class="fgrid" style="margin-top:18px">${F.text('GRN Date', 'date', { type: 'date', req: 1 })}
-    ${gm.length ? F.select('Link to milestone', 'milestoneId', gm.map(m => [m.id, `${m.code} — ${m.name}${m.receiptId ? ' (has a GRN)' : ''}`]), { blank: 'Not linked', hint: 'Links this GRN as the proof that clears the milestone gate. One GRN can back only one milestone.' }) : '<div></div>'}</div>
+    ${gm.length ? F.select('Link to milestone', 'milestoneId', gm.map(m => [m.id, `${m.code} — ${m.name}${(m.grnIds || []).length ? ` (${m.grnIds.length} GRN linked)` : ''}`]), { blank: 'Not linked', hint: 'Adds this GRN to the milestone\'s acceptance check. A milestone can have several GRNs; one GRN backs only one milestone.' }) : '<div></div>'}</div>
     ${F.area('Remarks', 'remarks', { ph: 'Enter Remarks' })}
     <div class="field"><label>Attachment</label>${attachBox('attachments', f.attachments)}</div>`;
   return h;
@@ -54,12 +58,12 @@ HOOKS.rcpo = () => { ui.f.rows = {}; ui.f.milestoneId = ''; };
 const grnFoot = () => ui.f && ui.f.poId ? `${gbtn('grn.create', 'grn-save', 'Send for inspection', { cls: 'btn-outline', data: { m: 'inspect' } })}${gbtn('grn.decide', 'grn-save', 'Complete GRN', { cls: 'btn-dark', data: { m: 'accept' } })}` : '';
 function grnEntries(mode) {
   const f = ui.f, po = getPO(f.poId); if (!po) return [];
-  return po.lines.map(l => ({ l, rec: +f.rows[l.id]?.received || 0, rej: +f.rows[l.id]?.rejected || 0 })).filter(x => x.rec > 0 || x.rej > 0).map(x => ({ ...x, d: { poId: po.id, lineId: x.l.id, date: f.date, received: x.rec, rejected: mode === 'accept' ? x.rej : 0, accepted: mode === 'accept' ? r2(x.rec - x.rej) : 0, remarks: f.remarks, attachments: f.attachments, milestoneId: f.milestoneId } }));
+  return goodsLines(po).map(l => ({ l, rec: +f.rows[l.id]?.received || 0, rej: +f.rows[l.id]?.rejected || 0 })).filter(x => x.rec > 0 || x.rej > 0).map(x => ({ ...x, d: { poId: po.id, lineId: x.l.id, date: f.date, received: x.rec, rejected: mode === 'accept' ? x.rej : 0, accepted: mode === 'accept' ? r2(x.rec - x.rej) : 0, remarks: f.remarks, attachments: f.attachments, milestoneId: f.milestoneId } }));
 }
 function grnDerive() {
   const f = ui.f, po = getPO(f.poId), box = $('#rc-val'); if (!po || !box) return;
   const es = grnEntries('accept'), errs = [];
-  es.forEach(e => validateGRN(e.d).forEach(m => errs.push(po.lines.length > 1 ? `Line ${e.l.no}: ${m}` : m)));
+  es.forEach(e => validateGRN(e.d).forEach(m => errs.push(goodsLines(po).length > 1 ? `Line ${e.l.no}: ${m}` : m)));
   if (f.milestoneId && es.length > 1) errs.push('A milestone can be linked to one GRN only — create one GRN per line when linking to a milestone.');
   const acc = sum(es, e => e.d.accepted), val = sum(es, e => e.d.accepted * e.l.price);
   box.innerHTML = errs.length ? alertBox('err', 'Cannot complete yet', errList([...new Set(errs)]))
@@ -69,7 +73,7 @@ function grnDerive() {
 ACT['grn-save'] = el => {
   const mode = el.dataset.m, f = ui.f, po = getPO(f.poId), es = grnEntries(mode), errs = [];
   if (!es.length) return toast('Enter the delivered quantity for at least one item', 'err');
-  es.forEach(e => validateGRN({ ...e.d, received: e.rec, rejected: mode === 'accept' ? e.rej : 0, accepted: mode === 'accept' ? r2(e.rec - e.rej) : 0 }).forEach(m => errs.push(po.lines.length > 1 ? `Line ${e.l.no}: ${m}` : m)));
+  es.forEach(e => validateGRN({ ...e.d, received: e.rec, rejected: mode === 'accept' ? e.rej : 0, accepted: mode === 'accept' ? r2(e.rec - e.rej) : 0 }).forEach(m => errs.push(goodsLines(po).length > 1 ? `Line ${e.l.no}: ${m}` : m)));
   if (f.milestoneId && es.length > 1) errs.push('A milestone can be linked to one GRN only — create one GRN per line when linking to a milestone.');
   if (errs.length) return errorModal('GRN cannot be completed', [...new Set(errs)]);
   const made = es.map(e => A.createGRN(e.d, mode));
@@ -82,24 +86,24 @@ ACT['srn-new'] = el => openSrnPanel(el.dataset.po, el.dataset.ms);
 function openSrnPanel(poId, msId) {
   openPanel({ key: 'srn', title: 'SRN', sub: 'Record the services delivered by the vendor', init: () => {
     const po = poId && getPO(poId), m = msId && getMS(msId);
-    return { poId: poId || '', fixed: !!poId, lineId: po ? po.lines[0].id : '', date: todayISO(), description: m ? `Services for milestone ${m.code} — ${m.name}` : '', serviceValue: m ? m.amount : '', remarks: '', attachments: [], milestoneId: msId || '' };
+    return { poId: poId || '', fixed: !!poId, lineId: po && serviceLines(po)[0] ? serviceLines(po)[0].id : '', date: todayISO(), description: m ? `Services for milestone ${m.code} — ${m.name}` : '', serviceValue: m ? m.amount : '', remarks: '', attachments: [], milestoneId: msId || '' };
   }, body: srnBody, foot: srnFoot, derive: srnDerive });
 }
-HOOKS.srnpo = () => { const f = ui.f, po = getPO(f.poId); f.lineId = po ? po.lines[0].id : ''; f.milestoneId = ''; };
+HOOKS.srnpo = () => { const f = ui.f, po = getPO(f.poId); f.lineId = po && serviceLines(po)[0] ? serviceLines(po)[0].id : ''; f.milestoneId = ''; };
 HOOKS.srnms = (el, v) => { const m = getMS(v); if (m) { ui.f.serviceValue = m.amount; if (!ui.f.description) ui.f.description = `Services for milestone ${m.code} — ${m.name}`; } };
 function srnBody() {
-  const f = ui.f, po = getPO(f.poId), pos = approvedPOs(p => !isGoods(p));
+  const f = ui.f, po = getPO(f.poId), pos = approvedPOs(hasServices);
   let h = '';
   if (f.fixed && po) h += `<div class="field"><label>Purchase order</label><div class="ro"><b style="margin-right:8px">${esc(po.number)}</b> ${esc(getSup(po.supplierId).name)}</div></div>`;
-  else h += `<div class="field"><label>Purchase order <span class="req">*</span></label><select class="input" data-f="poId" data-r data-hook="srnpo"><option value="">Select an approved services PO</option>${opt(pos.map(p => [p.id, `${p.number} — ${getSup(p.supplierId).name}`]), f.poId)}</select><div class="fhint">Only approved Services POs are listed. Goods POs use a GRN.</div></div>`;
+  else h += `<div class="field"><label>Purchase order <span class="req">*</span></label><select class="input" data-f="poId" data-r data-hook="srnpo"><option value="">Select an approved PO with service lines</option>${opt(pos.map(p => [p.id, `${p.number} — ${getSup(p.supplierId).name}`]), f.poId)}</select><div class="fhint">Only approved POs with service lines are listed (goods lines use a GRN).</div></div>`;
   if (!po) return h + '<div class="empty-state">Select a PO to record the service delivery.</div>';
-  const gm = gatedMilestones(po);
+  const gm = gatedMilestones(po, 'srn');
   h += `<div class="fgrid">
-    ${po.lines.length > 1 ? F.select('PO line', 'lineId', po.lines.map(l => [l.id, `${l.no}. ${l.desc}`]), { r: 1, req: 1, cls: 'span2' }) : ''}
+    ${serviceLines(po).length > 1 ? F.select('PO line', 'lineId', serviceLines(po).map(l => [l.id, `${l.no}. ${l.desc}`]), { r: 1, req: 1, cls: 'span2' }) : ''}
     ${F.text('Service description', 'description', { req: 1, cls: 'span2', ph: 'What was delivered?' })}
     ${F.text('Service value (INR)', 'serviceValue', { type: 'number', step: 'any', num: 1, req: 1, hint: '<span id="s-rem"></span>' })}
     ${F.text('SRN Date', 'date', { type: 'date', req: 1 })}
-    ${gm.length ? F.select('Link to milestone', 'milestoneId', gm.map(m => [m.id, `${m.code} — ${m.name} · ${money(m.amount)}${m.receiptId ? ' (has an SRN)' : ''}`]), { blank: 'Not linked', hook: 'srnms', r: 1, cls: 'span2', hint: 'Links this SRN as the proof that clears the milestone gate. One SRN can back only one milestone.' }) : ''}
+    ${gm.length ? F.select('Link to milestone', 'milestoneId', gm.map(m => [m.id, `${m.code} — ${m.name} · ${money(m.amount)}${(m.srnIds || []).length ? ` (${m.srnIds.length} SRN linked)` : ''}`]), { blank: 'Not linked', hook: 'srnms', r: 1, cls: 'span2', hint: 'Adds this SRN to the milestone\'s acceptance check. A milestone can have several SRNs; one SRN backs only one milestone.' }) : ''}
   </div>
   <div id="rc-val"></div>
   ${F.area('Remarks', 'remarks', { ph: 'Enter Remarks' })}

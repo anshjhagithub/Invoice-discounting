@@ -28,7 +28,7 @@ function seedDb(scn = 'default') {
       poDate, deliveryDate: daysFromNow(o.delDays ?? 60), endDate: daysFromNow((o.delDays ?? 60) + 30), type: o.type, category: o.category, currency: CURRENCY, gstRate: 18,
       status: o.status || 'Approved', billingMethod: o.method, progressBasis: o.basis || 'Receipt', overReceiptPct: 0,
       createdBy: 'Procurement Manager', createdAt: nowISO(),
-      lines: o.lines.map((d, i) => ({ id: `ln-${o.num}-${i + 1}`, no: i + 1, desc: d.desc, qty: d.qty, uom: d.uom, price: d.price })),
+      lines: o.lines.map((d, i) => ({ id: `ln-${o.num}-${i + 1}`, no: i + 1, desc: d.desc, qty: d.qty, uom: d.uom, price: d.price, kind: o.type === 'Mixed' ? (d.kind || 'Goods') : o.type })),
     };
     db.pos.push(po);
     if (po.status === 'Approved') { po.approvals.push({ at: nowISO(), by: 'Procurement Manager', action: 'Approved', note: '' }); audit(po.id, po.number, `PO approved (${po.billingMethod}).`, 'po'); }
@@ -38,19 +38,28 @@ function seedDb(scn = 'default') {
   const addMS = (po, defs) => {
     const amts = milestoneAmounts(defs, poNet(po));
     return defs.map((d, i) => {
+      const st = d.status || 'Pending', worked = ['Submitted for Approval', 'Under Review', 'Approved', 'Rejected'].includes(st), files = d.files || d.docFiles || [];
+      const dstat = st === 'Approved' ? 'Approved' : st === 'Rejected' ? 'Rejected' : 'Pending Approval';
       const m = { id: `ms-${po.id.slice(3)}-${i + 1}`, poId: po.id, seq: i + 1, code: `M${i + 1}`, name: d.name, pct: d.pct, amount: amts[i], planned: daysFromNow(d.planned ?? 30 * (i + 1)),
-        status: d.status || 'Pending Approval', needsReceipt: !!d.needs, receiptId: d.rec ? d.rec.id : null, evidence: d.files || [], remarks: d.remarks || '', actualDate: d.actual || '', approvedAt: ['Approved', 'Completed'].includes(d.status) ? nowISO() : '', rejectReason: '' };
-      db.milestones.push(m); if (d.rec) d.rec.milestoneId = m.id; return m;
+        status: st, needsDoc: !!d.doc, docTitle: d.doc || '', needsGrn: !!d.grn, needsSrn: !!d.srn, allowPartial: !!d.partial,
+        doc: d.doc && worked ? { files: d.docFiles || files, remarks: d.remarks || '', status: dstat, version: 1, uploadedBy: 'Vendor User', uploadedRole: 'supplier', uploadedAt: nowISO(), decidedBy: st === 'Approved' ? 'Procurement Manager' : '', decidedAt: st === 'Approved' ? nowISO() : '', rejectReason: st === 'Rejected' ? (d.reason || 'Please resubmit') : '' } : null,
+        grnIds: (d.grnRecs || []).map(r => r.id), srnIds: (d.srnRecs || []).map(r => r.id),
+        submissions: worked ? [{ v: 1, at: nowISO(), by: 'Vendor User', role: 'supplier', files, remarks: d.remarks || '', actualDate: d.actual || daysFromNow(-2), status: st === 'Approved' ? 'Approved' : st === 'Rejected' ? 'Rejected' : 'Submitted' }] : [],
+        history: [{ at: nowISO(), by: 'Procurement Manager', role: 'buyer', from: 'Draft', to: 'Pending', note: 'PO approved — milestone schedule approved with it' }],
+        evidence: worked ? files : [], remarks: d.remarks || '', actualDate: worked ? (d.actual || daysFromNow(-2)) : '', submittedBy: worked ? 'Vendor User' : '', submittedRole: worked ? 'supplier' : '',
+        approvedAt: st === 'Approved' ? nowISO() : '', approvedBy: st === 'Approved' ? 'Procurement Manager' : '', rejectReason: st === 'Rejected' ? (d.reason || 'Please resubmit') : '' };
+      if (st !== 'Pending' && st !== 'Draft') m.history.push({ at: nowISO(), by: 'Vendor User', role: 'supplier', from: 'Pending', to: st, note: 'seeded' });
+      db.milestones.push(m); (d.grnRecs || []).concat(d.srnRecs || []).forEach(r => { r.milestoneId = m.id; }); return m;
     });
   };
   const addGRN = (po, d) => {
     const seq = db.grns.filter(g => g.poId === po.id).length + 1;
-    const g = { id: `grn-${po.id.slice(3)}-${seq}`, poId: po.id, lineId: po.lines[0].id, seq, number: `GRN-${pad(seq)}`, date: daysFromNow(d.days), received: d.received, accepted: d.accepted, rejected: d.rejected, inspection: d.inspection || 'Passed', remarks: d.remarks || '', attachments: [], status: d.status, reversed: false, milestoneId: null, createdBy: 'Warehouse Receiver', createdAt: nowISO() };
+    const g = { id: `grn-${po.id.slice(3)}-${seq}`, poId: po.id, lineId: po.lines[d.line || 0].id, seq, number: `GRN-${pad(seq)}`, date: daysFromNow(d.days), received: d.received, accepted: d.accepted, rejected: d.rejected, inspection: d.inspection || 'Passed', remarks: d.remarks || '', attachments: [], status: d.status, reversed: false, milestoneId: null, createdBy: 'Warehouse Receiver', createdAt: nowISO() };
     db.grns.push(g); audit(po.id, g.number, `${g.number}: ${g.received} delivered, ${g.accepted} accepted, ${g.rejected} rejected → ${g.status}.`, 'grn'); return g;
   };
   const addSRN = (po, d) => {
     const seq = db.srns.filter(s => s.poId === po.id).length + 1;
-    const s = { id: `srn-${po.id.slice(3)}-${seq}`, poId: po.id, lineId: po.lines[0].id, seq, number: `SRN-${pad(seq)}`, date: daysFromNow(d.days), description: d.desc, serviceValue: d.value, acceptedValue: d.accepted || 0, status: d.status, remarks: '', attachments: [], milestoneId: null, createdBy: 'Service Receiver', createdAt: nowISO() };
+    const s = { id: `srn-${po.id.slice(3)}-${seq}`, poId: po.id, lineId: po.lines[d.line || 0].id, seq, number: `SRN-${pad(seq)}`, date: daysFromNow(d.days), description: d.desc, serviceValue: d.value, acceptedValue: d.accepted || 0, status: d.status, remarks: '', attachments: [], milestoneId: null, createdBy: 'Service Receiver', createdAt: nowISO() };
     db.srns.push(s); audit(po.id, s.number, `${s.number}: ${money(s.serviceValue)} → ${s.status}.`, 'srn'); return s;
   };
   const invoice = (po, o) => {
@@ -63,8 +72,8 @@ function seedDb(scn = 'default') {
   const p1042 = addPO({ num: 1042, title: 'Industrial machinery units', type: 'Goods', category: 'Machinery & Equipment', office: 'o-6192', method: scn === 'A' ? 'Standard' : scn === 'B' ? 'Milestone' : 'Progressive', status: scn === 'default' ? 'Approved' : 'Draft', lines: [MACHINE] });
   if (scn === 'B') addMS(p1042, [
     { name: 'Design Approval', pct: 20, status: 'Draft' },
-    { name: 'Equipment Delivered', pct: 50, status: 'Draft', needs: true },
-    { name: 'Commissioning Complete', pct: 30, status: 'Draft' },
+    { name: 'Equipment Delivered', pct: 50, status: 'Draft', grn: true },
+    { name: 'Commissioning Complete', pct: 30, status: 'Draft', doc: 'Commissioning Certificate' },
   ]);
   if (scn === 'default') {
     addGRN(p1042, { received: 30, accepted: 30, rejected: 0, status: 'Accepted', days: -20 });
@@ -76,9 +85,9 @@ function seedDb(scn = 'default') {
   const p1043 = addPO({ num: 1043, title: 'Machinery installation project', type: 'Goods', category: 'Machinery & Equipment', office: 'o-6164', method: 'Milestone', lines: [{ ...MACHINE, desc: 'Industrial Machinery Installation' }] });
   const g43 = addGRN(p1043, { received: 100, accepted: 0, rejected: 0, status: 'Pending Inspection', inspection: 'Pending', days: -2 });
   addMS(p1043, [
-    { name: 'Design Approval', pct: 20, status: 'Completed', files: ['design-signoff.pdf'], remarks: 'Drawings approved by engineering.', actual: daysFromNow(-12) },
-    { name: 'Equipment Delivered', pct: 50, status: 'Approved', needs: true, rec: g43, files: ['delivery-challan.pdf'], remarks: 'All units delivered to site.', actual: daysFromNow(-2) },
-    { name: 'Commissioning Complete', pct: 30 },
+    { name: 'Design Approval', pct: 20, status: 'Approved', files: ['design-signoff.pdf'], remarks: 'Drawings approved by engineering.', actual: daysFromNow(-12) },
+    { name: 'Equipment Delivered', pct: 50, status: 'Approved', grn: true, grnRecs: [g43], files: ['delivery-challan.pdf'], remarks: 'All units delivered to site.', actual: daysFromNow(-2) },
+    { name: 'Commissioning Complete', pct: 30, doc: 'Commissioning Certificate' },
   ]);
 
   /* PO 44 — standard billing regression (goods) */
@@ -97,9 +106,9 @@ function seedDb(scn = 'default') {
   const p1052 = addPO({ num: 1052, sup: 'sup2', title: 'Warehouse fit-out project', type: 'Services', category: 'Project Services', office: 'o-6314', method: 'Milestone', lines: [{ desc: 'Warehouse Fit-out Project', qty: 1, uom: 'Lot', price: 80000 }] });
   const srnM1 = addSRN(p1052, { days: -3, desc: 'Survey & design services — milestone M1', value: 20000, status: 'Pending Acceptance' });
   addMS(p1052, [
-    { name: 'Survey & Design', pct: 25, status: 'Approved', needs: true, rec: srnM1, files: ['survey-report.pdf'], remarks: 'Survey and layout design complete.', actual: daysFromNow(-5) },
-    { name: 'Fit-out Works', pct: 50, needs: true },
-    { name: 'Handover', pct: 25, needs: true },
+    { name: 'Survey & Design', pct: 25, status: 'Approved', srn: true, srnRecs: [srnM1], files: ['survey-report.pdf'], remarks: 'Survey and layout design complete.', actual: daysFromNow(-5) },
+    { name: 'Fit-out Works', pct: 50, status: 'Submitted for Approval', srn: true, files: ['fitout-photos.zip'], remarks: 'Fit-out completed in Zone A–C.', actual: daysFromNow(-1) },
+    { name: 'Handover', pct: 25, srn: true, doc: 'Handover Certificate' },
   ]);
 
   /* PO 60 — services, progressive billing on certified work progress */
@@ -109,6 +118,29 @@ function seedDb(scn = 'default') {
   db.claims.push(pc1, pc2); audit(p1060.id, 'PC-001', 'PC-001 certified for INR 30,000.', 'ok'); audit(p1060.id, 'PC-002', 'PC-002 submitted: cumulative INR 50,000 − certified INR 30,000 = current claim INR 20,000.', 'claim');
   const iv = invoice(p1060, { number: 'SFS-2026-0044', days: -20, allocs: [{ kind: 'claim', refId: pc1.id, value: 30000 }] });
   if (iv) { A.approveInvoice(iv.id, 'Verified against PC-001'); A.postInvoice(iv.id); }
+
+  /* PO 45 — GOODS PO, milestones with different acceptance rules:
+     M1 needs ACCEPTED GRNs (two staged deliveries, partial invoicing allowed) · M2 needs ONLY a Commissioning Certificate (no GRN, no invented quantity)
+     · M3 needs the certificate AND a GRN · M4 needs nothing extra */
+  const p1045 = addPO({ num: 1045, title: 'Packaging line installation', type: 'Goods', category: 'Machinery & Equipment', office: 'o-6192', method: 'Milestone', lines: [{ desc: 'Packaging Machine PM-5', qty: 4, uom: 'Units', price: 25000 }] });
+  const g45a = addGRN(p1045, { received: 1, accepted: 1, rejected: 0, status: 'Accepted', days: -9 });
+  const g45b = addGRN(p1045, { received: 1, accepted: 0, rejected: 0, status: 'Pending Inspection', inspection: 'Pending', days: -1 });
+  addMS(p1045, [
+    { name: 'Machines delivered', pct: 50, status: 'Approved', grn: true, partial: true, grnRecs: [g45a, g45b], files: ['delivery-note-1.pdf', 'delivery-note-2.pdf'], remarks: 'Both machines on site.', actual: daysFromNow(-1) },
+    { name: 'Commissioning Certificate', pct: 10, status: 'Submitted for Approval', doc: 'Commissioning Certificate', docFiles: ['commissioning-certificate.pdf'], remarks: 'Signed by the plant engineer.', actual: daysFromNow(-1) },
+    { name: 'Site acceptance', pct: 20, doc: 'Site Acceptance Certificate', grn: true },
+    { name: 'Final handover', pct: 20 },
+  ]);
+
+  /* PO 46 — MIXED goods + services PO (pumps are goods → GRN, installation is a service → SRN) */
+  const p1046 = addPO({ num: 1046, sup: 'sup2', title: 'Pump house build', type: 'Mixed', category: 'Project Services', office: 'o-6314', method: 'Milestone', lines: [{ desc: 'Centrifugal Pump CP-40', qty: 5, uom: 'Units', price: 10000, kind: 'Goods' }, { desc: 'Installation & piping', qty: 1, uom: 'Lot', price: 20000, kind: 'Services' }] });
+  const g46 = addGRN(p1046, { received: 4, accepted: 4, rejected: 0, status: 'Accepted', days: -6, line: 0 });
+  const s46 = addSRN(p1046, { days: -1, desc: 'Piping — stage 1', value: 8000, status: 'Pending Acceptance', line: 1 });
+  addMS(p1046, [
+    { name: 'Pumps delivered', pct: 50, status: 'Approved', grn: true, grnRecs: [g46], files: ['delivery-challan.pdf'], remarks: 'All 4 pumps received.', actual: daysFromNow(-5) },
+    { name: 'Installation complete', pct: 30, status: 'In Progress', srn: true, srnRecs: [s46], doc: 'Installation Report' },
+    { name: 'Go-live sign-off', pct: 20, grn: true, srn: true },
+  ]);
 
   /* a PO awaiting approval */
   addPO({ num: 1061, title: 'Conveyor belt assembly', type: 'Goods', category: 'Machinery & Equipment', office: 'o-6192', method: 'Standard', status: 'Pending Approval', poDays: -2, lines: [{ desc: 'Conveyor Belt Assembly', qty: 5, uom: 'Units', price: 7500 }] });

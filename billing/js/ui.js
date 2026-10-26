@@ -167,6 +167,7 @@ function openMenu(btn, items) {
 
 /* ---------- small renderers ---------- */
 const COLOR = {
+  'Not Uploaded': 'gray',
   Approved: 'green', Accepted: 'green', Paid: 'green', Certified: 'green', Eligible: 'green', Matched: 'green', Passed: 'green', Completed: 'green',
   Posted: 'blue', Submitted: 'blue', 'Pending Matching': 'blue',
   'Info Requested': 'amber', 'Pending Approval': 'amber', 'Pending Inspection': 'amber', 'Pending Acceptance': 'amber', 'Partially Accepted': 'amber', 'Partially Matched': 'amber', Pending: 'amber', 'Awaiting payment': 'amber',
@@ -282,7 +283,7 @@ const NAV = [
 ];
 const approvalCount = () => db.invoices.filter(i => i.status === 'Pending Approval').length + db.pos.filter(p => p.status === 'Pending Approval').length
   + db.grns.filter(g => g.status === 'Pending Inspection').length + db.srns.filter(s => s.status === 'Pending Acceptance').length
-  + db.milestones.filter(m => m.status === 'Pending Approval').length + db.claims.filter(c => c.status === 'Submitted').length;
+  + db.milestones.filter(m => m.status === 'Pending Approval' || docState(m) === 'Pending Approval').length + db.claims.filter(c => c.status === 'Submitted').length;
 function renderSidebar() {
   const root = ui.r.parts[0] || 'pos';
   document.querySelector('.app').classList.toggle('sb-collapsed', !!ui.sbCollapsed);

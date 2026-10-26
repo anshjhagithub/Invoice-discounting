@@ -603,3 +603,18 @@ select.input.sm{padding-right:30px;background-position:right 10px center}
 .modal-search{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border-2);padding:8px 4px;color:var(--muted)}
 .modal-search input{border:none;outline:none;flex:1;font-size:14px;background:none}
 .modal .noitems{padding:26px 0}
+
+/* milestone acceptance configuration */
+.li-table tr.acc-row td{border-top:none;background:#FAFAFD;padding:6px 8px 12px}
+.li-table tr.ms-main td{border-bottom:none}
+.acc{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px}
+.acc-l{color:var(--muted);font-size:11.5px}
+.cc{display:flex;align-items:center;gap:6px;margin:2px 0;font-size:12.5px;white-space:nowrap}
+.cc-t{color:var(--text-2)}
+
+.acc-chips{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.acc-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:10px;padding:2px 9px}
+.acc-chip.doc{background:#FFF1E4;color:#A5530F}
+.acc-chip.rec{background:#E3F2FD;color:#1B5FA6}
+.accbox{align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fff}
+.accbox input{margin-top:3px}
