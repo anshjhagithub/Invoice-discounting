@@ -214,7 +214,8 @@ r = A.amendPO(po.id, { lines: [{ id: po.lines[0].id, qty: 1, price: 80000 }], mi
 /* ---- Permissions ---- */
 db.meta.role = 'supplier'; eq('Perm: supplier may start/submit but not decide or create orders', [can('ms.start'), can('ms.submit'), can('ms.decide'), can('po.edit'), can('inv.create')], [true, true, false, false, true]);
 db.meta.role = 'buyer'; eq('Perm: buyer may configure and decide but not submit evidence or invoice', [can('po.edit'), can('ms.decide'), can('ms.submit'), can('inv.create')], [true, true, false, false]);
-db.meta.role = 'receiver'; eq('Perm: receiver (project owner) submits evidence and decides, creates receipts', [can('ms.submit'), can('ms.decide'), can('grn.create'), can('srn.create')], [true, true, true, true]);
+db.meta.role = 'receiver'; eq('Perm: receiver submits evidence and creates receipts but does not decide (project owner does)', [can('ms.submit'), can('ms.decide'), can('grn.create'), can('srn.create')], [true, false, true, true]);
+db.meta.role = 'owner'; eq('Perm: project owner decides milestones, approves advances; finance verifies guarantees', [can('ms.decide'), can('adv.approve'), can('guar.verify'), (db.meta.role = 'finance', can('guar.verify'))], [true, true, false, true]);
 db.meta.role = 'ap'; eq('Perm: only AP approves, posts, reverses and adjusts invoices', [can('inv.approve'), can('inv.post'), can('inv.reverse'), can('inv.adjust'), can('ms.decide')], [true, true, true, true, false]);
 db.meta.role = 'admin';
 

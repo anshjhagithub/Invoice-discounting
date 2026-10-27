@@ -21,6 +21,8 @@ ROUTES.overview = () => {
     pendMs ? row(sb('Pending Approval'), `${pendMs} milestone approval(s) / document(s) awaiting approval`, '#/approvals?tab=milestones', 'Review') : '',
     gatedMs.length ? row(sb('Not Eligible'), `${gatedMs.length} approved milestone(s) blocked until their GRN / SRN is accepted: ${gatedMs.map(m => m.code + ' on ' + getPO(m.poId).number.split('/').pop()).join(', ')}`, '#/pos?tab=pending', 'Open POs') : '',
     pendClaims ? row(sb('Submitted'), `${pendClaims} progress claim(s) awaiting certification`, '#/approvals?tab=claims', 'Certify') : '',
+    advQueue().length ? row(sb('Requested'), `${advQueue().length} advance request(s) / guarantee(s) awaiting a decision`, '#/approvals?tab=advances', 'Review') : '',
+    reviewItems().length ? row(sb('Reversed'), `${reviewItems().length} AP review item(s): posted invoices whose receipt or milestone entitlement dropped`, '#/overview', 'See below') : '',
     pendPO ? row(sb('Pending Approval'), `${pendPO} PO(s) awaiting approval`, '#/approvals?tab=pos', 'Approve') : '',
   ].filter(Boolean).join('') || '<div class="hint">Nothing needs attention.</div>';
   return `<div class="page"><div class="ph" style="margin-bottom:0"><h1 class="page-title">Overview</h1><div class="right">${gbtn('po.edit', 'po-new', 'Create Order', { cls: 'btn-primary', icn: 'plus' })}</div></div>
@@ -40,6 +42,8 @@ ROUTES.overview = () => {
     <div class="card"><div class="card-t">Needs attention</div>${attn}</div></div>
    <div class="sec">By billing method</div>
    <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Billing method</th><th class="right">Approved POs</th><th class="right">PO value</th><th class="right">Accepted</th><th class="right">Invoiced</th><th class="right">Ready to invoice</th></tr></thead><tbody>${methods.map(x => `<tr class="click" data-act="go" data-hash="#/pos?tab=pending&method=${x.k}"><td>${mb(x.k)}</td><td class="num">${x.n}</td><td class="num">${fmtNum(x.v)}</td><td class="num">${fmtNum(x.acc)}</td><td class="num">${fmtNum(x.inv)}</td><td class="num strong">${fmtNum(x.rem)}</td></tr>`).join('')}</tbody></table></div>
+   ${advReportsHtml()}
+   ${settingsCardHtml()}
    <div class="sec">Recent activity</div><div class="timeline-card" style="max-width:760px"><ul class="tl">${db.audit.slice(0, 8).map(a => `<li class="${a.kind === 'ok' ? 'ok' : a.kind === 'bad' ? 'bad' : a.kind === 'alloc' ? 'amber' : ''}"><div class="tt">${esc(a.text)}</div><div class="tm">${esc(a.ref)} · ${esc(a.by)} · ${fmtDT(a.at)}</div></li>`).join('')}</ul></div>
   </div>`;
 };

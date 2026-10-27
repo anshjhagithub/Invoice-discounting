@@ -1,8 +1,8 @@
 <!doctype html><html><head><meta charset="utf-8"><title>shot</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
 <!-- Debug page for screenshots: shot.html?scn=default&do=<js to run after first render>#/route -->
 <div class="app"><aside id="sidebar" class="sidebar"></aside><main id="main" class="main"></main></div><div id="toasts" class="toast-stack"></div>
-<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
-<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script>
+<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/advances.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
+<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-adv.js"></script><script src="../js/screens-dash.js"></script>
 <script>
 const Q = new URLSearchParams(location.search);
 const errs = []; window.addEventListener('error', e => { errs.push(e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); const b = document.createElement('pre'); b.style.cssText = 'position:fixed;top:0;left:0;z-index:999;background:#fee;color:#900;padding:8px;font-size:12px;max-width:100%'; b.textContent = errs.join('\n'); document.body.appendChild(b); });

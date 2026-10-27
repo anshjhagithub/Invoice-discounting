@@ -19,7 +19,7 @@ function seedDb(scn = 'default') {
       { id: 'sup1', name: 'Bharat Industrial Equipment Pvt Ltd', code: 'VEN-1042', gstin: '27AABCB4321K1Z6', email: 'accounts@bharat-industrial.example', mobile: '9876500142' },
       { id: 'sup2', name: 'Sahyadri Facility Services Pvt Ltd', code: 'VEN-2077', gstin: '27AAECS8890L1ZQ', email: 'billing@sahyadri-fs.example', mobile: '9876500277' },
     ],
-    pos: [], milestones: [], grns: [], srns: [], claims: [], invoices: [], adjustments: [], audit: [],
+    pos: [], milestones: [], grns: [], srns: [], claims: [], invoices: [], adjustments: [], advances: [], audit: [],
   };
   const addPO = o => {
     const poDate = daysFromNow(o.poDays ?? -45), seqNo = o.num - 1000;
@@ -28,7 +28,8 @@ function seedDb(scn = 'default') {
       poDate, deliveryDate: daysFromNow(o.delDays ?? 60), endDate: daysFromNow((o.delDays ?? 60) + 30), type: o.type, category: o.category, currency: CURRENCY, gstRate: 18,
       status: o.status || 'Approved', billingMethod: o.method, progressBasis: o.basis || 'Receipt', overReceiptPct: 0,
       createdBy: 'Procurement Manager', createdAt: nowISO(),
-      lines: o.lines.map((d, i) => ({ id: `ln-${o.num}-${i + 1}`, no: i + 1, desc: d.desc, qty: d.qty, uom: d.uom, price: d.price, kind: o.type === 'Mixed' ? (d.kind || 'Goods') : o.type })),
+      lines: o.lines.map((d, i) => ({ id: `ln-${o.num}-${i + 1}`, no: i + 1, desc: d.desc, qty: d.qty, uom: d.uom, price: d.price, kind: o.type === 'Mixed' ? (d.kind || 'Goods') : o.type, outside: !!d.outside })),
+      settings: { ...PO_DEFAULTS }, scheduleOpen: null,
     };
     db.pos.push(po);
     if (po.status === 'Approved') { po.approvals.push({ at: nowISO(), by: 'Procurement Manager', action: 'Approved', note: '' }); audit(po.id, po.number, `PO approved (${po.billingMethod}).`, 'po'); }
@@ -36,20 +37,23 @@ function seedDb(scn = 'default') {
     return po;
   };
   const addMS = (po, defs) => {
-    const amts = milestoneAmounts(defs, poNet(po));
+    const toScope = d => d.scope && d.scope.map(x => ({ lineId: po.lines[x.line].id, basis: x.basis, ...(x.basis === 'quantity' ? { qty: x.qty } : x.basis === 'percent' ? { percent: x.percent } : { amount: x.amount }) }));
+    const drafts = defs.map(d => ({ pct: d.pct, scope: toScope(d) })), sch = buildSchedule(po.lines, drafts);
     return defs.map((d, i) => {
       const st = d.status || 'Pending', worked = ['Submitted for Approval', 'Under Review', 'Approved', 'Rejected'].includes(st), files = d.files || d.docFiles || [];
       const dstat = st === 'Approved' ? 'Approved' : st === 'Rejected' ? 'Rejected' : 'Pending Approval';
-      const m = { id: `ms-${po.id.slice(3)}-${i + 1}`, poId: po.id, seq: i + 1, code: `M${i + 1}`, name: d.name, pct: d.pct, amount: amts[i], planned: daysFromNow(d.planned ?? 30 * (i + 1)),
-        status: st, needsDoc: !!d.doc, docTitle: d.doc || '', needsGrn: !!d.grn, needsSrn: !!d.srn, allowPartial: !!d.partial,
+      const m = makeMilestone(po, { id: `ms-${po.id.slice(3)}-${i + 1}`, name: d.name, pct: d.pct, scope: drafts[i].scope, needsDoc: !!d.doc, docTitle: d.doc || '', needsGrn: !!d.grn, needsSrn: !!d.srn, allowPartial: !!d.partial, requireCompleteQty: !!d.complete,
+        needsGuarantee: !!d.guar, guaranteeTitle: d.guar || '', advance: d.advance, dependsOn: d.dependsOn || [] }, i, sch);
+      Object.assign(m, { planned: daysFromNow(d.planned ?? 30 * (i + 1)), status: st,
         doc: d.doc && worked ? { files: d.docFiles || files, remarks: d.remarks || '', status: dstat, version: 1, uploadedBy: 'Vendor User', uploadedRole: 'supplier', uploadedAt: nowISO(), decidedBy: st === 'Approved' ? 'Procurement Manager' : '', decidedAt: st === 'Approved' ? nowISO() : '', rejectReason: st === 'Rejected' ? (d.reason || 'Please resubmit') : '' } : null,
         grnIds: (d.grnRecs || []).map(r => r.id), srnIds: (d.srnRecs || []).map(r => r.id),
         submissions: worked ? [{ v: 1, at: nowISO(), by: 'Vendor User', role: 'supplier', files, remarks: d.remarks || '', actualDate: d.actual || daysFromNow(-2), status: st === 'Approved' ? 'Approved' : st === 'Rejected' ? 'Rejected' : 'Submitted' }] : [],
         history: [{ at: nowISO(), by: 'Procurement Manager', role: 'buyer', from: 'Draft', to: 'Pending', note: 'PO approved — milestone schedule approved with it' }],
         evidence: worked ? files : [], remarks: d.remarks || '', actualDate: worked ? (d.actual || daysFromNow(-2)) : '', submittedBy: worked ? 'Vendor User' : '', submittedRole: worked ? 'supplier' : '',
-        approvedAt: st === 'Approved' ? nowISO() : '', approvedBy: st === 'Approved' ? 'Procurement Manager' : '', rejectReason: st === 'Rejected' ? (d.reason || 'Please resubmit') : '' };
+        approvedAt: st === 'Approved' ? nowISO() : '', approvedBy: st === 'Approved' ? 'Procurement Manager' : '', rejectReason: st === 'Rejected' ? (d.reason || 'Please resubmit') : '' });
+      if (d.guarantee) m.guarantee = { id: `gu-${m.id}`, title: d.guar, bank: d.guarantee.bank, amount: d.guarantee.amount, validUntil: daysFromNow(d.guarantee.days), files: ['guarantee.pdf'], status: 'Verified', version: 1, uploadedBy: 'Vendor User', uploadedRole: 'supplier', uploadedAt: nowISO(), verifiedBy: 'Finance Officer', verifiedAt: nowISO(), rejectReason: '', history: [] };
       if (st !== 'Pending' && st !== 'Draft') m.history.push({ at: nowISO(), by: 'Vendor User', role: 'supplier', from: 'Pending', to: st, note: 'seeded' });
-      db.milestones.push(m); (d.grnRecs || []).concat(d.srnRecs || []).forEach(r => { r.milestoneId = m.id; }); return m;
+      db.milestones.push(m); (d.grnRecs || []).concat(d.srnRecs || []).forEach(r => { r.milestoneId = m.id; r.links = [{ msId: m.id, cap: null }]; }); return m;
     });
   };
   const addGRN = (po, d) => {
@@ -142,9 +146,33 @@ function seedDb(scn = 'default') {
     { name: 'Go-live sign-off', pct: 20, grn: true, srn: true },
   ]);
 
+  /* PO 47 — the worked example of the milestone specification: a MIXED PO with a line-scoped schedule, a line billed outside the schedule,
+     two shipments on one milestone (partial invoicing), a 25% advance on M2 against a verified guarantee, and proportional recovery. */
+  const p1047 = addPO({ num: 1047, title: 'Data-centre rack & network build', type: 'Mixed', category: 'Machinery & Equipment', office: 'o-6192', method: 'Milestone', lines: [
+    { desc: 'Rack servers', qty: 10, uom: 'Units', price: 300000, kind: 'Goods' }, { desc: 'Network switches', qty: 20, uom: 'Units', price: 50000, kind: 'Goods' },
+    { desc: 'Installation and commissioning', qty: 50, uom: 'Man-days', price: 20000, kind: 'Services' }, { desc: 'Network consumables', qty: 100, uom: 'Nos', price: 500, kind: 'Goods', outside: true }] });
+  const g47a = addGRN(p1047, { received: 6, accepted: 6, rejected: 0, status: 'Accepted', days: -8, line: 0 });
+  const g47b = addGRN(p1047, { received: 12, accepted: 11, rejected: 1, status: 'Partially Accepted', inspection: 'Partially Passed', days: -8, line: 1, remarks: '1 switch failed inspection' });
+  const s47 = addSRN(p1047, { days: -20, desc: 'Design and site survey — 10 man-days', value: 200000, accepted: 200000, status: 'Accepted', line: 2 });
+  addGRN(p1047, { received: 40, accepted: 40, rejected: 0, status: 'Accepted', days: -5, line: 3, remarks: 'Consumables — billed outside the schedule' });
+  const m47 = addMS(p1047, [
+    { name: 'Design and site-survey sign-off', scope: [{ line: 2, basis: 'quantity', qty: 10 }], status: 'Approved', srnRecs: [s47], files: ['survey-signoff.pdf'], remarks: 'Survey and design signed off.', actual: daysFromNow(-18) },
+    { name: 'Equipment delivered', scope: [{ line: 0, basis: 'quantity', qty: 10 }, { line: 1, basis: 'quantity', qty: 20 }], status: 'Approved', partial: true, grnRecs: [g47a, g47b], files: ['delivery-note-1.pdf'], remarks: 'First shipment on site: 6 servers, 11 switches.', actual: daysFromNow(-7),
+      advance: { allowed: true, mode: 'percent', value: 25, recovery: 'proportional', guaranteeRequired: true, guaranteeTitle: 'Advance payment guarantee' } },
+    { name: 'Installation complete', scope: [{ line: 2, basis: 'quantity', qty: 30 }], dependsOn: ['M2'] },
+    { name: 'Commissioning and UAT', scope: [{ line: 2, basis: 'quantity', qty: 10 }], doc: 'UAT certificate', dependsOn: ['M3'] },
+  ]);
+  const ia = invoice(p1047, { number: 'DCB-2026-001', days: -17, allocs: [{ kind: 'milestone', refId: m47[0].id, value: 200000 }] });
+  if (ia) { A.approveInvoice(ia.id, 'Survey verified'); A.postInvoice(ia.id); A.payInvoice(ia.id); }
+  const rq = A.requestAdvance({ poId: p1047.id, msId: m47[1].id, base: 1000000, tdsPct: 2, remarks: 'Advance against the equipment order' });
+  if (rq.ok) { A.approveAdvance(rq.id, 'Within caps'); A.advUploadGuarantee(rq.id, { bank: 'HDFC Bank', amount: 1000000, validUntil: daysFromNow(210), files: ['advance-guarantee.pdf'] }); A.advVerifyGuarantee(rq.id);
+    const iv = invoice(p1047, { number: 'DCB-ADV-001', days: -12, allocs: [{ kind: 'advance', refId: rq.id, value: 1000000 }] });
+    if (iv) { A.approveInvoice(iv.id, 'Advance approved'); A.postInvoice(iv.id); A.payInvoice(iv.id); } }
+  invoice(p1047, { number: 'DCB-2026-002', days: -3, allocs: [{ kind: 'milestone', refId: m47[1].id, value: 2350000 }] });             // shipment 1 — carries the -587,500 advance recovery
+
   /* E13 ageing demo: M2 of PO 52 has waited 3 days (reminder), M2 of PO 45 six days (escalated) */
   msOf(p1052)[1].submittedAt = new Date(Date.now() - 3 * 864e5).toISOString();
-  msOf(p1045)[1].submittedAt = new Date(Date.now() - 6 * 864e5).toISOString();
+  msOf(p1045)[1].submittedAt = new Date(Date.now() - 8 * 864e5).toISOString();
 
   /* a PO awaiting approval */
   addPO({ num: 1061, title: 'Conveyor belt assembly', type: 'Goods', category: 'Machinery & Equipment', office: 'o-6192', method: 'Standard', status: 'Pending Approval', poDays: -2, lines: [{ desc: 'Conveyor Belt Assembly', qty: 5, uom: 'Units', price: 7500 }] });

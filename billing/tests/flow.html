@@ -1,7 +1,7 @@
-<!doctype html><html><head><meta charset="utf-8"><title>flow</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
+﻿<!doctype html><html><head><meta charset="utf-8"><title>flow</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
 <div class="app"><aside id="sidebar" class="sidebar"></aside><main id="main" class="main"></main></div><div id="toasts" class="toast-stack"></div><pre id="out">running…</pre>
-<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
-<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script>
+<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/advances.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
+<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-adv.js"></script><script src="../js/screens-dash.js"></script>
 <script>
 /* Drives the app the way a user does: clicks real buttons and types into real inputs inside the drawers. */
 const log = [], flush = () => { document.getElementById('out').textContent = log.join('\n'); };
@@ -117,14 +117,17 @@ run('progressive flow', () => {
   seedDb('default'); nav('po/po-1042?tab=billing');
   const g1 = db.grns.find(g => g.poId === 'po-1042' && g.number === 'GRN-001'), g2 = db.grns.find(g => g.poId === 'po-1042' && g.number === 'GRN-002');
   const addLine = id => { click('.panel [data-act="inv-line-add"]'); const cb = $q(`.overlay input[data-pick="${id}"]`); if (!cb) { const none = $q('.overlay')?.textContent.includes('No Items found'); document.querySelector('.overlay')?.remove(); return none ? 'none' : 'missing'; } cb.click(); submitModal(); return 'added'; };
-  const inv = (no, g, qty) => { openInvPanel({ poId: 'po-1042' }); setv('number', no); addLine('grn:' + g.id); setv(`alloc.grn:${g.id}.qty`, qty); };
+  const inv = (no, g, qty) => { openInvPanel({ poId: 'po-1042' }); ui.f.alloc = {}; render(); setv('number', no); addLine('grn:' + g.id); setv(`alloc.grn:${g.id}.qty`, qty); };
   inv('BIE-001', g1, 30); T('preview + totals update', panelText().includes('35,400'), panelText().slice(0, 100)); click('[data-act="inv-save"][data-m="submit"]');
   T('invoice 1 pending approval', db.invoices.some(i => i.number === 'BIE-001' && i.status === 'Pending Approval' && i.gross === 35400));
   closePanel(); inv('BIE-002', g2, 20); click('[data-act="inv-save"][data-m="submit"]'); T('invoice 2 created', db.invoices.some(i => i.number === 'BIE-002'));
-  closePanel(); openInvPanel({ poId: 'po-1042' }); T('fully used GRN-001 is not offered in the Add Line Item dialog', addLine('grn:' + g1.id) === 'missing');
+  closePanel(); openInvPanel({ poId: 'po-1042' }); T('fully used GRN-001 is not offered in the Add Line Item dialog', addLine('grn:' + g1.id) !== 'added');
+  closePanel(); db.invoices.find(i => i.number === 'BIE-002').status = 'Rejected'; db.invoices.find(i => i.number === 'BIE-002').allocs = [];
+  openInvPanel({ poId: 'po-1042' }); T('opening the drawer from a PO fetches every billable line (GRN-002 + GRN-003)', Object.keys(ui.f.alloc).length >= 2 && !!$q('.panel [data-f="alloc.grn:' + g2.id + '.qty"]'), Object.keys(ui.f.alloc));
+  openInvPanel({ poId: 'po-1044' }); T('Standard PO fetches the available balance into the line', +ui.f.net > 0, ui.f.net);
   /* over-allocation live message */
   closePanel(); db.invoices.find(i => i.number === 'BIE-002').status = 'Rejected'; db.invoices.find(i => i.number === 'BIE-002').allocs = [];
-  openInvPanel({ poId: 'po-1042' }); setv('number', 'Y'); addLine('grn:' + g2.id); setv(`alloc.grn:${g2.id}.qty`, 45);
+  openInvPanel({ poId: 'po-1042' }); ui.f.alloc = {}; render(); setv('number', 'Y'); addLine('grn:' + g2.id); setv(`alloc.grn:${g2.id}.qty`, 45);
   T('over-quantity shows a live blocked message', $q('#inv-sum').textContent.includes('would be blocked') && $q('#inv-sum').textContent.includes('exceeds the eligible quantity'), $q('#inv-sum').textContent);
   click('[data-act="inv-save"][data-m="submit"]'); T('over-quantity submit blocked', !db.invoices.some(i => i.number === 'Y') && modalText().length > 0); document.querySelector('.overlay')?.remove(); closePanel();
 });
@@ -152,5 +155,111 @@ run('corrections and edge cases', () => {
   T('amend dialog offers Cancel only on milestones that can still be cancelled', document.querySelectorAll('.overlay input[name^="mx_"]').length >= 1 && document.querySelectorAll('.overlay input[name^="mx_"]').length < msOf(po45).length); document.querySelector('.overlay')?.remove();
 });
 
+/* ===== 8. Line-scoped schedule, advance, recovery — end to end through the UI ===== */
+run('scoped schedule + advance + recovery (UI)', () => {
+  seedDb('default'); nav('pos'); click('[data-act="po-new"]');
+  setv('type', 'Goods'); setv('supplierId', 'sup1'); setv('title', 'Scoped PO');
+  click('.panel [data-act="ln-add"]'); setv('lines.0.desc', 'Servers'); setv('lines.0.qty', 10); setv('lines.0.price', 1000);
+  click('.panel [data-act="ln-add"]'); setv('lines.1.desc', 'Cables'); setv('lines.1.qty', 100); setv('lines.1.price', 10);
+  click('[data-act="po-method"][data-m="Milestone"]'); ui.f.milestones = []; render();
+  T('line table offers the "Outside" flag for Milestone POs', !!$q('.panel [data-f="lines.0.outside"]'));
+  click('.panel [data-act="ms-add"]'); let f = $q('.overlay form');
+  T('milestone editor offers scope, gates, advance and dependencies (no document / guarantee options)', !!f.querySelector('[data-mode="lines"]') && !!f.querySelector('[name=requireCompleteQty]') && !f.querySelector('[name=needsGuarantee]') && !f.querySelector('[name=needsDoc]') && !!f.querySelector('[name=advAllowed]'));
+  f.querySelector('[name=name]').value = 'Servers delivered'; f.querySelector('[data-mode="lines"]').click();
+  const v1 = f.querySelector('#sc-rows [data-k="v"]'); v1.value = 10; v1.dispatchEvent(new Event('input', { bubbles: true }));
+  T('editor shows the derived milestone amount', f.querySelector('#sc-total').textContent.includes('10,000'), f.querySelector('#sc-total').textContent);
+  f.querySelector('[name=allowPartial]').checked = true; const aa = f.querySelector('[name=advAllowed]'); aa.checked = true; aa.dispatchEvent(new Event('change', { bubbles: true }));
+  f.querySelector('[name=advValue]').value = 20; submitModal();
+  T('milestone 1 saved with a quantity scope and advance terms', ui.f.milestones.length === 1 && ui.f.milestones[0].scope[0].basis === 'quantity' && ui.f.milestones[0].advance.allowed && ui.f.milestones[0].allowPartial);
+  click('.panel [data-act="ms-add"]'); f = $q('.overlay form'); f.querySelector('[name=name]').value = 'Cabling'; f.querySelector('[data-mode="lines"]').click();
+  const ls = f.querySelector('#sc-rows [data-k="lineId"]'); ls.value = ui.f.lines[1].id; ls.dispatchEvent(new Event('change', { bubbles: true }));
+  const bs = f.querySelector('#sc-rows [data-k="basis"]'); bs.value = 'percent'; bs.dispatchEvent(new Event('change', { bubbles: true }));
+  const v2 = f.querySelector('#sc-rows [data-k="v"]'); v2.value = 100; v2.dispatchEvent(new Event('input', { bubbles: true })); submitModal();
+  T('coverage panel shows both lines fully assigned', panelText().includes('Fully assigned') && !panelText().includes('Not assigned'), panelText().slice(panelText().indexOf('Coverage'), panelText().indexOf('Coverage') + 200));
+  click('[data-act="po-submit"]');
+  const po = db.pos.find(p => p.title === 'Scoped PO'); T('PO created with derived amounts 10,000 and 1,000', po && msOf(po).map(m => m.amount).join() === '10000,1000', po && msOf(po).map(m => m.amount));
+  ACT['po-approve']({ dataset: { id: po.id } }); submitModal(); T('PO approved', po.status === 'Approved');
+  const [m1] = msOf(po);
+  nav('po/' + po.id + '?tab=advances'); T('Advances tab shows the terms and the + button', mainText().includes('Advances Requests') || mainText().includes('No Advances'));
+  click('#main [data-act="adv-new"]'); f = $q('.overlay form');
+  T('Create Advance dialog is prefilled with the agreed advance (20% of 10,000 = 2,000)', +f.querySelector('[name=base]').value === 2000 && $q('.overlay').textContent.includes('Total payable'), f.querySelector('[name=base]').value);
+  submitModal(); const adv = db.advances.find(a => a.poId === po.id); T('advance requested', !!adv && adv.base === 2000 && advStatus(adv) === 'Requested');
+  ACT['adv-approve']({ dataset: { id: adv.id } }); submitModal(); T('advance approved → ready to invoice', advStatus(getAdv(adv.id)) === 'Approved');
+  openAdvPanel(adv.id); click('.panel .panel-foot [data-act="inv-new"]'); T('invoice drawer opens with the advance preselected', ui.f.alloc['advance:' + adv.id]?.on === true);
+  setv('number', 'ADV-UI-1'); click('[data-act="inv-save"][data-m="submit"]'); const ai = db.invoices.find(i => i.number === 'ADV-UI-1');
+  T('advance invoice submitted: GST 360 on 2,000', ai && ai.status === 'Pending Approval' && ai.gst === 360 && ai.advanceId === adv.id);
+  A.approveInvoice(ai.id); A.postInvoice(ai.id); A.payInvoice(ai.id); closePanel();
+  A.msStart(m1.id); A.msSubmit(m1.id, { actualDate: todayISO() }); A.msApprove(m1.id);
+  const g = A.createGRN({ poId: po.id, lineId: po.lines[0].id, date: todayISO(), received: 5, rejected: 0, milestoneId: m1.id }, 'accept');
+  T('GRN of 5 units linked to the quantity slice → 5,000 eligible, no gate fabricated', g.ok && msEnt(getMS(m1.id), po) === 5000);
+  nav('po/' + po.id + '?tab=billing'); click(`#main [data-act="inv-new"][data-ms="${m1.id}"]`);
+  T('invoice drawer preselects the eligible 5,000', ui.f.alloc['milestone:' + m1.id]?.value === 5000, ui.f.alloc);
+  setv('number', 'MS-UI-1'); T('live preview shows the advance recovery line (−1,000: 5,000 × 2,000 ÷ 10,000)', panelText().includes('Advance recovered') && panelText().includes('1,000'), panelText().slice(0, 200));
+  click('[data-act="inv-save"][data-m="submit"]'); const mi = db.invoices.find(i => i.number === 'MS-UI-1');
+  T('milestone invoice carries the recovery; cash = 5,900 − 1,180 = 4,720', mi && mi.recovery.net === 1000 && payable(mi) === r2(5900 - 1180), mi && [mi.recovery, payable(mi)]);
+  nav('invoice/' + mi.id); T('invoice page shows the advance recovered and the payable', mainText().includes('Advance recovered') && mainText().includes('Payable'));
+  nav('overview'); T('overview lists the outstanding advance and the billing settings', mainText().includes('Outstanding advances by age') && mainText().includes('Billing settings') && mainText().includes('Delegate approvals'));
+  openMilestonePanel(m1.id); T('milestone drawer shows the scope table and the advance block', panelText().includes('Scope') && panelText().includes('Advance') && panelText().includes('Remaining')); closePanel();
+});
+run('intake + guarantee + approvals queue (UI)', () => {
+  seedDb('default'); const po = PO('po-1047'), m = msOf(po)[2];
+  nav('po/po-1047?tab=billing'); openInvPanel({ poId: po.id }); click('.panel [data-act="inv-intake"]'); click('.overlay #in-sample');
+  T('intake groups the lines into Billable / Waiting / Rejected with reasons', $q('.overlay').textContent.includes('Claimed') && $q('.overlay').textContent.includes('Rejected') && $q('.overlay').textContent.includes('Rate'));
+  T('overriding a line re-matches it', !!$q('.overlay select[data-ov="line"]')); document.querySelector('.overlay')?.remove(); closePanel();
+  nav('approvals?tab=advances'); T('approvals has an Advances & guarantees tab', mainText().includes('Advances & guarantees') || !!$q('#main .tab'));
+  const rq = A.requestAdvance({ poId: 'po-1044', msId: 'x', base: 1 }); T('advances are refused on a non-milestone PO', !rq.ok);
+  nav('overview'); click('#main [data-act="deleg-add"]'); T('a delegation can be added from the settings card', (db.meta.delegations || []).length === 1);
+});
+
+run('dependencies: editor → gate → timeline (UI)', () => {
+  seedDb('default'); nav('pos'); click('[data-act="po-new"]');
+  setv('type', 'Goods'); setv('supplierId', 'sup1'); setv('title', 'Dep PO');
+  click('.panel [data-act="ln-add"]'); setv('lines.0.desc', 'Items'); setv('lines.0.qty', 10); setv('lines.0.price', 1000);
+  click('[data-act="po-method"][data-m="Milestone"]'); ui.f.milestones = []; render();
+  const msForm = (name, pct, planned) => { click('.panel [data-act="ms-add"]'); const f = $q('.overlay form'); f.querySelector('[name=name]').value = name; const p = f.querySelector('[name=pct]'); p.value = pct; p.dispatchEvent(new Event('input', { bubbles: true })); f.querySelector('[name=planned]').value = planned; return f; };
+  let f = msForm('Design', 50, daysFromNow(10));
+  T('editor is split into short sections (Basics · Scope · Conditions · Advance · Timing & dependencies)', f.querySelectorAll('details.mm-sec').length === 5 && !!f.querySelector('#dp-rows') && !!f.querySelector('[name=duration]') && !!f.querySelector('[name=forecast]'));
+  submitModal();
+  f = msForm('Install', 50, daysFromNow(12)); click('.overlay #dp-add');
+  const sel = (k, v, ev = 'change') => { const e = $q('.overlay').querySelector(`[data-dp="0"][data-k="${k}"]`); e.value = v; e.dispatchEvent(new Event(ev, { bubbles: true })); };
+  T('Add dependency picks the first other milestone (M1) with FS · lag 0 · schedule', $q('.overlay').querySelector('[data-dp="0"][data-k="pred"]').value === 'M1');
+  sel('lag', 30, 'input'); sel('lag', 30); sel('effect', 'both');
+  T('live message warns that M2 is dated before M1 + 30 days (warning only)', $q('.overlay #dp-msg').textContent.includes('allows it only from'), $q('.overlay #dp-msg').textContent);
+  submitModal(); const m2 = ui.f.milestones[1];
+  T('dependency saved with lag 30 and effect both', m2.deps && m2.deps[0].pred === 'M1' && m2.deps[0].lag === 30 && m2.deps[0].effect === 'both', m2.deps);
+  T('schedule row shows the dependency chip "M1 FS+30"', $q('.panel .ms-tbl').textContent.includes('M1 FS+30'));
+  click('.panel [data-act="ms-edit"][data-i="0"]'); click('.overlay #dp-add'); const e0 = $q('.overlay').querySelector('[data-dp="0"][data-k="pred"]'); e0.value = 'M2'; e0.dispatchEvent(new Event('change', { bubbles: true }));
+  T('a cycle M1 → M2 → M1 is shown live', $q('.overlay #dp-msg').textContent.includes('Dependency cycle'), $q('.overlay #dp-msg').textContent);
+  submitModal(); T('…and the editor refuses to save it', !!$q('.overlay form') && !(ui.f.milestones[0].deps || []).length); document.querySelector('.overlay')?.remove();
+  click('[data-act="po-submit"]'); const po = db.pos.find(p => p.title === 'Dep PO'); T('PO created with the dependency', !!po && msOf(po)[1].deps[0].effect === 'both');
+  ACT['po-approve']({ dataset: { id: po.id } }); submitModal();
+  const [a, b] = msOf(po); A.msStart(a.id); A.msSubmit(a.id, { actualDate: todayISO(), files: ['f'] }); A.msApprove(a.id); A.msStart(b.id); A.msSubmit(b.id, { actualDate: todayISO(), files: ['f'] }); A.msApprove(b.id);
+  nav('po/' + po.id + '?tab=billing'); T('billing tab shows the timeline and a Timeline column with forecast', mainText().includes('Timeline') && mainText().includes('M1 FS+30'));
+  openInvPanel({ poId: po.id }); T('invoice drawer does not fetch the gated milestone (M2 waits for M1 + 30 days)', !ui.f.alloc['milestone:' + b.id]); closePanel();
+  getMS(a.id).approvedAt = new Date(Date.now() - 31 * 864e5).toISOString(); openInvPanel({ poId: po.id });
+  T('after 30 days the gate opens and the drawer fetches it', !!ui.f.alloc['milestone:' + b.id]); closePanel();
+  openMilestonePanel(b.id); T('milestone drawer shows Timing & dependencies with the predecessor state', panelText().includes('Timing & dependencies') && panelText().includes('Finish → Start')); closePanel();
+});
+run('quantity trigger + delay damages (UI)', () => {
+  seedDb('default'); nav('pos'); click('[data-act="po-new"]');
+  setv('type', 'Goods'); setv('supplierId', 'sup1'); setv('title', 'Trigger PO');
+  click('.panel [data-act="ln-add"]'); setv('lines.0.desc', 'Servers'); setv('lines.0.qty', 150); setv('lines.0.price', 1000);
+  click('[data-act="po-method"][data-m="Milestone"]'); ui.f.milestones = []; render();
+  const scoped = (name, qty, extra) => { click('.panel [data-act="ms-add"]'); const f = $q('.overlay form'); f.querySelector('[name=name]').value = name; f.querySelector('[data-mode="lines"]').click();
+    const v = f.querySelector('#sc-rows [data-k="v"]'); v.value = qty; v.dispatchEvent(new Event('input', { bubbles: true })); f.querySelector('[name=allowPartial]').checked = true; if (extra) extra(f); submitModal(); };
+  scoped('Fires at 100', 100, f => { const t = f.querySelector('[name=trigOn]'); t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); f.querySelector('[name=trigQty]').value = 100; f.querySelector('[name=dmgRate]').value = 0.5; f.querySelector('[name=dmgCap]').value = 5; });
+  T('trigger and damages saved on the milestone', ui.f.milestones[0].trigger && ui.f.milestones[0].trigger.qty === 100 && ui.f.milestones[0].damages.ratePct === 0.5 && ui.f.milestones[0].damages.capPct === 5, ui.f.milestones[0]);
+  T('schedule row shows the "Fires at 100 cumulative" chip', $q('.panel .ms-tbl').textContent.includes('Fires at 100 cumulative'));
+  scoped('Rest', 50);
+  click('[data-act="po-submit"]'); const po = db.pos.find(p => p.title === 'Trigger PO'); T('PO created', !!po);
+  ACT['po-approve']({ dataset: { id: po.id } }); submitModal(); const [m1, m2] = msOf(po);
+  [m1, m2].forEach(m => { A.msStart(m.id); A.msSubmit(m.id, { actualDate: todayISO(), files: ['f'] }); A.msApprove(m.id); });
+  const g = n => A.createGRN({ poId: po.id, lineId: po.lines[0].id, date: todayISO(), received: n, rejected: 0 }, 'accept');
+  g(60); nav('po/' + po.id + '?tab=billing'); T('before the threshold the table says how far the trigger is (60 of 100)', mainText().includes('60 of 100 reached'), mainText().slice(mainText().indexOf('Acceptance'), mainText().indexOf('Acceptance') + 300));
+  g(55); nav('po/' + po.id + '?tab=billing'); T('after the GRN that crosses 100 it shows Fired · 115 cumulative', mainText().includes('Fired · 115 cumulative'));
+  openMilestonePanel(m1.id); T('drawer names the firing GRN and the 15 surplus units going to M2', panelText().includes('Fired by GRN-') && panelText().includes('15 surplus unit(s) count toward M2'), panelText().slice(panelText().indexOf('Quantity trigger'), panelText().indexOf('Quantity trigger') + 300)); closePanel();
+});
 document.getElementById('out').textContent = log.join('\n') + '\n' + (log.some(l => l.startsWith('FAIL') || l.startsWith('ERR')) ? 'SOME FAILED' : 'ALL UI FLOWS PASSED');
 </script></body></html>
+
+

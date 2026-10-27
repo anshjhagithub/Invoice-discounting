@@ -73,8 +73,8 @@ seedDb('default');
   E('E16 M2 approved before M1 → allowed with an out-of-sequence advisory', r.ok && /Out of sequence: M1/.test(r.msg), r.msg); }
 { const po = mkPO({ billingMethod: 'Milestone', milestones: [msd({ name: 'A', pct: 50 }), msd({ name: 'B', pct: 50 })] }), m = msOf(po)[0];
   A.msStart(m.id); A.msSubmit(m.id, { actualDate: todayISO() }); getMS(m.id).submittedAt = new Date(Date.now() - 3 * 864e5).toISOString();
-  const ag = msAging(getMS(m.id)); getMS(m.id).submittedAt = new Date(Date.now() - 6 * 864e5).toISOString();
-  E('E13 ageing: 3 days → reminder, 6 days → escalated', ag.level === 'reminder' && msAging(getMS(m.id)).level === 'escalated'); }
+  const ag = msAging(getMS(m.id)); getMS(m.id).submittedAt = new Date(Date.now() - 8 * 864e5).toISOString();
+  E('E13 ageing: 3 days → reminder, 8 days → escalated', ag.level === 'reminder' && msAging(getMS(m.id)).level === 'escalated'); }
 { const po = mkPO({ billingMethod: 'Milestone', milestones: [msd({ name: 'A', pct: 50 }), msd({ name: 'B', pct: 50 })] }), [m1, m2] = msOf(po);
   msReady(m1); sub(po, [ma(m1)]);
   const bad = A.amendPO(po.id, { lines: [{ id: po.lines[0].id, qty: 100, price: 100 }], milestones: [{ id: m1.id, remove: true }, { id: m2.id, name: 'B', pct: 100 }], reason: 'drop M1' });

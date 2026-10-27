@@ -1,4 +1,4 @@
-/* =====================================================================
+﻿/* =====================================================================
    ui.js — router, shell, drawers (panels), modals, shared widgets, lists, sidebar
    ===================================================================== */
 const ui = { r: { parts: [], q: {} }, f: null, fKey: '', lists: {}, listSig: {}, derive: null, after: null, lastPath: '', panel: null };
@@ -172,7 +172,8 @@ const COLOR = {
   Posted: 'blue', Submitted: 'blue', 'Pending Matching': 'blue', 'In Progress': 'blue', 'Submitted for Approval': 'blue', 'Under Review': 'amber', 'Partially Invoiced': 'purple', None: 'gray',
   'Info Requested': 'amber', 'Pending Approval': 'amber', 'Pending Inspection': 'amber', 'Pending Acceptance': 'amber', 'Partially Accepted': 'amber', 'Partially Matched': 'amber', Pending: 'amber', 'Awaiting payment': 'amber',
   Draft: 'gray', Cancelled: 'gray', Closed: 'gray', 'Not Eligible': 'gray', 'Not started': 'gray', 'Not posted to AP': 'gray',
-  Rejected: 'red', 'Matching Failed': 'red', Blocked: 'red', Failed: 'red', Reversed: 'red', Invoiced: 'purple', Reserved: 'amber', Committed: 'green',
+  Requested: 'amber', 'Guarantee pending': 'amber', 'Invoice raised': 'blue', 'Partly recovered': 'purple', Recovered: 'green', Refunded: 'gray', Verified: 'green', Uploaded: 'amber', Expired: 'red', Incomplete: 'amber',
+  Met: 'green', Waiting: 'amber', Rejected: 'red', 'Matching Failed': 'red', Blocked: 'red', Failed: 'red', Reversed: 'red', Invoiced: 'purple', Reserved: 'amber', Committed: 'green',
 };
 const sb = s => `<span class="badge-s s-${COLOR[s] || 'gray'}">${esc(s)}</span>`;
 const mb = m => `<span class="m-badge m-${String(m).toLowerCase()}">${esc(m)}</span>`;
@@ -283,7 +284,7 @@ const NAV = [
 ];
 const approvalCount = () => db.invoices.filter(i => i.status === 'Pending Approval').length + db.pos.filter(p => p.status === 'Pending Approval').length
   + db.grns.filter(g => g.status === 'Pending Inspection').length + db.srns.filter(s => s.status === 'Pending Acceptance').length
-  + db.milestones.filter(msAwaiting).length + db.claims.filter(c => c.status === 'Submitted').length;
+  + db.milestones.filter(msAwaiting).length + db.claims.filter(c => c.status === 'Submitted').length + advQueue().length;
 function renderSidebar() {
   const root = ui.r.parts[0] || 'pos';
   document.querySelector('.app').classList.toggle('sb-collapsed', !!ui.sbCollapsed);

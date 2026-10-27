@@ -1,7 +1,7 @@
 /* =====================================================================
    core.js — helpers, icons, persistence, audit, roles
    ===================================================================== */
-const STORE_KEY = 'dice.billing.proto.v3';
+const STORE_KEY = 'dice.billing.proto.v4';
 const GST_RATES = [0, 5, 12, 18, 28];
 const GST_DEFAULT = 18;
 const CURRENCY = 'INR';
@@ -60,14 +60,23 @@ const ROLES = {
   receiver: { name: 'Warehouse / Service Receiver',   label: 'Buyer — Receiver' },
   ap:       { name: 'AP Manager',                     label: 'Buyer — AP Manager' },
   supplier: { name: 'Vendor User',                    label: 'Vendor — Portal' },
+  owner:    { name: 'Project Owner',                  label: 'Buyer — Project Owner' },
+  finance:  { name: 'Finance Officer',                label: 'Buyer — Finance' },
 };
 const PERM = {
   'po.edit': ['buyer'], 'po.approve': ['buyer'], 'po.amend': ['buyer'],
   'grn.create': ['receiver'], 'grn.decide': ['receiver'], 'srn.create': ['receiver'], 'srn.decide': ['receiver'],
-  'ms.start': ['supplier', 'receiver'], 'ms.submit': ['supplier', 'receiver'], 'ms.decide': ['receiver', 'buyer'], 'claim.create': ['supplier'], 'claim.decide': ['buyer'],
+  'ms.start': ['supplier', 'receiver'], 'ms.submit': ['supplier', 'receiver'], 'ms.decide': ['owner', 'buyer'],
+  'guar.upload': ['supplier'], 'guar.verify': ['finance'], 'adv.request': ['supplier'], 'adv.approve': ['owner', 'buyer'], 'adv.refund': ['ap'], 'po.settings': ['buyer'], 'claim.create': ['supplier'], 'claim.decide': ['buyer'],
   'inv.create': ['supplier', 'ap'], 'inv.match': ['ap', 'supplier'], 'inv.approve': ['ap'], 'inv.post': ['ap'], 'inv.adjust': ['ap'], 'inv.reverse': ['ap'], 'inv.cancel': ['ap', 'supplier'],
 };
-const can = k => !db || db.meta.role === 'admin' || (PERM[k] || []).includes(db.meta.role);
+/* ---------- settings (system-wide in db.meta.settings; PO-level ones via poCfg) ---------- */
+const SYS_DEFAULTS = { reminderAfterDays: 3, escalateAfterDays: 7, reservationTimeoutHours: 24, adminExemptFromSod: true };
+const PO_DEFAULTS = { maxAdvancePctPerMilestone: 30, maxAdvancePctOfPO: 20, advanceGstMode: 'taxed_on_advance', valueTolerancePct: 0, enforceDependencies: false, dueBasis: 'later', dueDays: '' };
+const cfg = () => ({ ...SYS_DEFAULTS, ...((db && db.meta && db.meta.settings) || {}) });
+/* E14: an approver can delegate to another role (optionally until a date); pending items simply become visible to the delegate, earlier approvals stay valid */
+const delegatedPerm = k => ((db.meta.delegations || []).some(d => d.to === db.meta.role && (PERM[k] || []).includes(d.from) && (!d.until || d.until >= todayISO())));
+const can = k => !db || db.meta.role === 'admin' || (PERM[k] || []).includes(db.meta.role) || delegatedPerm(k);
 const whyNot = k => `Requires role: ${(PERM[k] || []).map(r => ROLES[r].name).join(' / ')} (switch role in the sidebar)`;
 const actor = () => ROLES[db.meta.role].name;
 

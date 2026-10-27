@@ -1,7 +1,7 @@
 <!doctype html><html><head><meta charset="utf-8"><title>smoke</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/app.css"></head><body>
 <div class="app"><aside id="sidebar" class="sidebar"></aside><main id="main" class="main"></main></div><div id="toasts" class="toast-stack"></div><pre id="out">running…</pre>
-<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
-<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-dash.js"></script>
+<script src="../js/core.js"></script><script src="../js/logic.js"></script><script src="../js/advances.js"></script><script src="../js/seed.js"></script><script src="../js/ui.js"></script>
+<script src="../js/screens-po.js"></script><script src="../js/screens-receipts.js"></script><script src="../js/screens-bill.js"></script><script src="../js/screens-inv.js"></script><script src="../js/screens-adv.js"></script><script src="../js/screens-dash.js"></script>
 <script>
 /* Renders every route, every PO tab, every drawer for every record and fails on any screen / panel error. */
 const log = []; let routes = 0, panels = 0, bad = 0;
@@ -10,12 +10,13 @@ window.addEventListener('error', e => fail('ERR ' + e.message + ' @' + (e.filena
 try { localStorage.clear(); } catch (e) {}
 const txt = () => document.getElementById('main').textContent + document.getElementById('sidebar').textContent;
 const route = h => { routes++; location.hash = h; render(); if (document.querySelector('#main .alert.err .at')?.textContent === 'Screen error') fail('route ' + h + ': ' + document.querySelector('#main .alert.err').textContent); if (txt().includes('undefined') || txt().includes('NaN') || txt().includes('[object')) fail('route ' + h + ': contains undefined/NaN/[object]'); };
+const modal = (name, fn) => { panels++; try { fn(); } catch (e) { fail('modal ' + name + ': ' + e.message); } const o = document.querySelector('.overlay'); const t = o ? o.textContent : ''; if (/undefined|NaN|\[object/.test(t)) fail('modal ' + name + ': contains undefined/NaN/[object] :: ' + (t.match(/.{30}(undefined|NaN|\[object).{20}/) || [''])[0]); document.querySelectorAll('.overlay').forEach(x => x.remove()); closePanel(); };
 const panel = (name, fn) => { panels++; try { fn(); } catch (e) { fail('panel ' + name + ': ' + e.message); } if (document.querySelector('.panel .alert.err .at')?.textContent === 'Panel error') fail('panel ' + name + ': ' + document.querySelector('.panel .alert.err').textContent); const t = document.querySelector('.panel')?.textContent || ''; if (/undefined|NaN|\[object/.test(t)) fail('panel ' + name + ': contains undefined/NaN/[object] :: ' + (t.match(/.{30}(undefined|NaN|\[object).{20}/) || [''])[0]); closePanel(); };
 for (const scn of ['default', 'A', 'B']) {
   seedDb(scn); log.push('-- scenario ' + scn);
   ['#/overview', '#/pos', '#/pos?tab=all', '#/pos?tab=past', '#/receipts', '#/receipts?tab=pending', '#/invoices', '#/invoices?tab=all', '#/approvals', '#/approvals?tab=receipts', '#/approvals?tab=milestones', '#/approvals?tab=claims', '#/approvals?tab=pos', '#/ap', '#/po/missing', '#/invoice/missing'].forEach(route);
   db.pos.forEach(po => {
-    ['overview', 'lines', 'billing', 'receipts', 'invoices', 'history'].forEach(t => route(`#/po/${po.id}?tab=${t}`));
+    ['overview', 'lines', 'billing', 'receipts', 'invoices', 'advances', 'history'].forEach(t => route(`#/po/${po.id}?tab=${t}`));
     panel('po-view ' + po.number, () => ACT['po-view']({ dataset: { id: po.id } }));
     if (po.status === 'Draft') panel('po-edit ' + po.number, () => openPoPanel(po.id));
     if (po.status === 'Approved') {
@@ -24,7 +25,9 @@ for (const scn of ['default', 'A', 'B']) {
       if (hasGoods(po)) panel('grn ' + po.number, () => openGrnPanel(po.id)); if (hasServices(po)) panel('srn ' + po.number, () => openSrnPanel(po.id));
       if (poCertified(po)) panel('claim-new ' + po.number, () => ACT['claim-new']({ dataset: { po: po.id } }));
     }
-    msOf(po).forEach(m => panel('ms ' + m.code + ' ' + po.number, () => openMilestonePanel(m.id)));
+    msOf(po).forEach(m => { panel('ms ' + m.code + ' ' + po.number, () => openMilestonePanel(m.id)); if (po.status === 'Approved' && !msLocked(m)) modal('ms-amend ' + m.code + ' ' + po.number, () => ACT['ms-amend']({ dataset: { id: m.id } })); });
+    advsOf(po).forEach(a => panel('adv ' + a.number + ' ' + po.number, () => openAdvPanel(a.id)));
+    if (po.status === 'Approved' && po.billingMethod === 'Milestone') { modal('adv-request ' + po.number, () => ACT['adv-new']({ dataset: { po: po.id } })); modal('ms-add ' + po.number, () => ACT['ms-amend-add']({ dataset: { po: po.id } })); panel('inv-intake ' + po.number, () => { openInvPanel({ poId: po.id }); ACT['inv-intake'](); const h = document.querySelector('.overlay #in-sample'); if (h) h.click(); }); }
     claimsOf(po).forEach(c => panel('claim ' + c.number, () => ACT['claim-open']({ dataset: { id: c.id } })));
     grnsOf(po).forEach(g => { panel('grn ' + g.number, () => openReceiptPanel('grn', g.id)); panel('ocr ' + g.number, () => { if (po.status === 'Approved') openInvPanel({ recKind: 'grn', recId: g.id, ocr: true }); }); });
     srnsOf(po).forEach(s => panel('srn ' + s.number, () => openReceiptPanel('srn', s.id)));

@@ -5,6 +5,8 @@
 const approvedPOs = filter => db.pos.filter(p => p.status === 'Approved' && (!filter || filter(p)));
 const grnStatus = g => g.reversed ? 'Reversed' : g.status;
 /* milestones on this PO that can still be backed by a receipt */
+/* with a milestone chosen, only the lines in its scope can be received against it */
+const scopedLines = (po, f, lines) => { const m = f && f.milestoneId && getMS(f.milestoneId); return m && (m.scope || []).length ? lines.filter(l => inScope(m, l.id)) : lines; };
 const gatedMilestones = (po, kind) => po.billingMethod === 'Milestone' ? msOf(po).filter(m => (kind === 'grn' ? m.needsGrn : m.needsSrn) && m.status !== 'Draft') : [];
 
 /* ================================================================ tables on the PO page */
@@ -44,7 +46,7 @@ function grnBody() {
   if (!po) return h + '<div class="empty-state">Select a PO to enter the delivered quantities.</div>';
   const gm = gatedMilestones(po, 'grn');
   h += `<div class="sec-h">GRN Items</div><div class="tbl-wrap"><table class="tbl sm"><thead><tr><th>Id</th><th>Details</th><th class="right">Price</th><th class="right">Available Quantity / Unit</th><th class="right">Delivered</th><th class="right">Rejected</th></tr></thead><tbody>
-    ${goodsLines(po).map((l, i) => { const st = lineReceiptStats(po, l); return `<tr><td>${i + 1}</td><td class="strong">${esc(l.desc)}</td><td class="num">${money(l.price)}</td><td class="num">${fmtNum(st.remaining)} / ${esc(l.uom)}</td>
+    ${scopedLines(po, f, goodsLines(po)).map((l, i) => { const st = lineReceiptStats(po, l); return `<tr><td>${i + 1}</td><td class="strong">${esc(l.desc)}</td><td class="num">${money(l.price)}</td><td class="num">${fmtNum(st.remaining)} / ${esc(l.uom)}</td>
       <td><input class="input sm num" style="width:96px" type="number" min="0" step="any" data-t="num" data-f="rows.${l.id}.received" value="${esc(f.rows[l.id]?.received ?? '')}" placeholder="0"></td>
       <td><input class="input sm num" style="width:84px" type="number" min="0" step="any" data-t="num" data-f="rows.${l.id}.rejected" value="${esc(f.rows[l.id]?.rejected ?? '')}" placeholder="0"></td></tr>`; }).join('')}</tbody></table></div>
     <div id="rc-val" style="margin-top:12px"></div>
@@ -58,7 +60,7 @@ HOOKS.rcpo = () => { ui.f.rows = {}; ui.f.milestoneId = ''; };
 const grnFoot = () => ui.f && ui.f.poId ? `${gbtn('grn.create', 'grn-save', 'Send for inspection', { cls: 'btn-outline', data: { m: 'inspect' } })}${gbtn('grn.decide', 'grn-save', 'Complete GRN', { cls: 'btn-dark', data: { m: 'accept' } })}` : '';
 function grnEntries(mode) {
   const f = ui.f, po = getPO(f.poId); if (!po) return [];
-  return goodsLines(po).map(l => ({ l, rec: +f.rows[l.id]?.received || 0, rej: +f.rows[l.id]?.rejected || 0 })).filter(x => x.rec > 0 || x.rej > 0).map(x => ({ ...x, d: { poId: po.id, lineId: x.l.id, date: f.date, received: x.rec, rejected: mode === 'accept' ? x.rej : 0, accepted: mode === 'accept' ? r2(x.rec - x.rej) : 0, remarks: f.remarks, attachments: f.attachments, milestoneId: f.milestoneId } }));
+  return scopedLines(po, f, goodsLines(po)).map(l => ({ l, rec: +f.rows[l.id]?.received || 0, rej: +f.rows[l.id]?.rejected || 0 })).filter(x => x.rec > 0 || x.rej > 0).map(x => ({ ...x, d: { poId: po.id, lineId: x.l.id, date: f.date, received: x.rec, rejected: mode === 'accept' ? x.rej : 0, accepted: mode === 'accept' ? r2(x.rec - x.rej) : 0, remarks: f.remarks, attachments: f.attachments, milestoneId: f.milestoneId } }));
 }
 function grnDerive() {
   const f = ui.f, po = getPO(f.poId), box = $('#rc-val'); if (!po || !box) return;
@@ -86,7 +88,7 @@ ACT['srn-new'] = el => openSrnPanel(el.dataset.po, el.dataset.ms);
 function openSrnPanel(poId, msId) {
   openPanel({ key: 'srn', title: 'SRN', sub: 'Record the services delivered by the vendor', init: () => {
     const po = poId && getPO(poId), m = msId && getMS(msId);
-    return { poId: poId || '', fixed: !!poId, lineId: po && serviceLines(po)[0] ? serviceLines(po)[0].id : '', date: todayISO(), description: m ? `Services for milestone ${m.code} — ${m.name}` : '', serviceValue: m ? m.amount : '', remarks: '', attachments: [], milestoneId: msId || '' };
+    return { poId: poId || '', fixed: !!poId, lineId: po && serviceLines(po)[0] ? (scopedLines(po, { milestoneId: msId }, serviceLines(po))[0] || serviceLines(po)[0]).id : '', date: todayISO(), description: m ? `Services for milestone ${m.code} — ${m.name}` : '', serviceValue: m ? m.amount : '', remarks: '', attachments: [], milestoneId: msId || '' };
   }, body: srnBody, foot: srnFoot, derive: srnDerive });
 }
 HOOKS.srnpo = () => { const f = ui.f, po = getPO(f.poId); f.lineId = po && serviceLines(po)[0] ? serviceLines(po)[0].id : ''; f.milestoneId = ''; };
@@ -99,7 +101,7 @@ function srnBody() {
   if (!po) return h + '<div class="empty-state">Select a PO to record the service delivery.</div>';
   const gm = gatedMilestones(po, 'srn');
   h += `<div class="fgrid">
-    ${serviceLines(po).length > 1 ? F.select('PO line', 'lineId', serviceLines(po).map(l => [l.id, `${l.no}. ${l.desc}`]), { r: 1, req: 1, cls: 'span2' }) : ''}
+    ${scopedLines(po, f, serviceLines(po)).length > 1 ? F.select('PO line', 'lineId', scopedLines(po, f, serviceLines(po)).map(l => [l.id, `${l.no}. ${l.desc}`]), { r: 1, req: 1, cls: 'span2' }) : ''}
     ${F.text('Service description', 'description', { req: 1, cls: 'span2', ph: 'What was delivered?' })}
     ${F.text('Service value (INR)', 'serviceValue', { type: 'number', step: 'any', num: 1, req: 1, hint: '<span id="s-rem"></span>' })}
     ${F.text('SRN Date', 'date', { type: 'date', req: 1 })}
