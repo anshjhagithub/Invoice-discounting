@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DICE · Invoice Discounting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/id.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main" id="main"></main>
+</div>
+<div class="toast-stack" id="toasts"></div>
+<script src="js/core.js"></script>
+<!-- BILLING (commented out) — the Progressive & Milestone Billing scripts of the original prototype. Their code is still in ../billing/.
+<script src="js/logic.js"></script><script src="js/advances.js"></script>
+<script src="js/seed.js"></script>
+<script src="js/screens-po.js"></script>
+<script src="js/screens-receipts.js"></script>
+<script src="js/screens-bill.js"></script>
+<script src="js/screens-inv.js"></script><script src="js/screens-adv.js"></script>
+<script src="js/screens-dash.js"></script>
+-->
+<!-- Invoice discounting: PSB API schema (generated from the workbook) → validation → mock PSBXchange → domain logic → seed -->
+<script src="js/id-schema.js"></script>
+<script src="js/id-validate.js"></script>
+<script src="js/id-gateway.js"></script>
+<script src="js/id-logic.js"></script>
+<script src="js/id-seed.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/id-ui.js"></script>
+<script src="js/screens-avail.js"></script>
+<script src="js/screens-inv.js"></script>
+<script src="js/screens-integration.js"></script>
+<script src="js/boot.js"></script>
+</body>
+</html>

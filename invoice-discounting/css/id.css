@@ -1,0 +1,60 @@
+/* id.css — additions for the invoice-discounting screens (everything else comes from base.css / app.css of the DICE shell) */
+.stepper{display:flex;gap:0;margin:22px 0 18px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff}
+.stepper .step{flex:1;display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:13px;font-weight:500;color:var(--muted);border-right:1px solid var(--border);background:#fff;text-align:left}
+.stepper .step:last-child{border-right:none}
+.stepper .step b{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--row-alt);border:1px solid var(--border-2);font-size:12px;color:var(--text-2);flex:none}
+.stepper .step.active{color:var(--text);font-weight:700;background:var(--primary-50)}
+.stepper .step.active b{background:var(--primary);color:#fff;border-color:var(--primary)}
+.stepper .step.done b{background:#2FB67C;color:#fff;border-color:#2FB67C}
+.stepper .step.err b{background:var(--danger);color:#fff;border-color:var(--danger)}
+.field.has-err .input{border-color:var(--danger);background:#FFFAFA}
+.ferr{font-size:12px;color:var(--danger);margin-top:5px;font-weight:500}
+.tag-api{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;font-weight:500;letter-spacing:0;text-transform:none;color:#8A8AA0;background:#F3F2F8;border-radius:3px;padding:1px 5px;margin-left:6px}
+.tag-dice{font-size:10px;font-weight:600;letter-spacing:0;text-transform:none;color:#8A5A00;background:#FFF1D6;border-radius:3px;padding:1px 5px;margin-left:6px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+pre.json{margin:0;background:#16161A;color:#E6E6F0;border-radius:6px;padding:14px 16px;font-size:11.5px;line-height:1.55;overflow:auto;max-height:420px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre}
+pre.json .k{color:#9CDCFE}pre.json .s{color:#CE9178}pre.json .n{color:#B5CEA8}pre.json .b{color:#569CD6}
+.lender-card{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;background:#fff;cursor:pointer}
+.lender-card.on{border-color:var(--primary);background:var(--primary-50)}
+.lender-card.off{background:var(--row-alt);cursor:not-allowed;opacity:.85}
+.lender-card input{accent-color:var(--primary);width:17px;height:17px;margin-top:2px}
+.lender-card .nm{font-weight:600;font-size:13.5px}.lender-card .sm{font-size:12px;color:var(--muted);margin-top:2px}
+.chip{display:inline-block;font-size:11px;font-weight:600;border:1px solid var(--border-2);background:#fff;border-radius:10px;padding:1px 8px;margin:0 4px 2px 0;color:var(--text-2)}
+.person-card{border:1px solid var(--border);border-radius:8px;padding:14px 16px 2px;margin-bottom:12px;background:#fff}
+.person-card .ph-h{display:flex;align-items:center;margin-bottom:10px;font-weight:600}
+.person-card .ph-h .spacer{flex:1}
+.offer{border:1.5px solid var(--border-2);border-radius:8px;padding:14px 16px;margin-bottom:10px;background:#fff;display:flex;gap:12px;align-items:flex-start;cursor:pointer}
+.offer.on{border-color:var(--primary);background:var(--primary-50);box-shadow:0 0 0 1px var(--primary)}
+.offer.expired{opacity:.6;cursor:not-allowed}
+.offer input{accent-color:var(--primary);margin-top:3px}
+.offer .net{margin-left:auto;text-align:right;font-weight:700;font-size:18px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.offer .net small{display:block;font-size:11px;font-weight:500;color:var(--muted)}
+.banner-prov{background:#FFF8E6;border:1px dashed #E0A030;color:#6A4A00;border-radius:7px;padding:9px 13px;font-size:12px;margin:12px 0;display:flex;gap:9px;align-items:flex-start}
+.pc-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.03em;padding:4px 10px;border-radius:12px;text-transform:uppercase}
+.pc-OPEN{background:#E1F4EA;color:#12794B}.pc-FINANCING_HOLD{background:#FFF1D6;color:#8A5A00}.pc-LOCKED{background:#FDE7E8;color:#B3262C}.pc-CLOSED{background:#EEEEF2;color:#5C5C68}
+.sim-card{border:1.5px dashed #B9B2E8;border-radius:8px;background:#FAF9FF;padding:14px 16px;margin-top:18px}
+.sim-card .st{font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--primary-600);margin-bottom:8px}
+.sim-card .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.sim-card label.chk{display:inline-flex;gap:6px;align-items:center;font-size:12px;margin-right:14px}
+.fld-table{width:100%;border-collapse:collapse;font-size:12px}
+.fld-table th{background:var(--row-alt);text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);position:sticky;top:0}
+.fld-table td{padding:7px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+.fld-table tr.m-yes td:first-child{box-shadow:inset 3px 0 0 var(--danger)}.fld-table tr.m-cond td:first-child{box-shadow:inset 3px 0 0 #E0A030}
+.mand{font-size:11px;font-weight:700;border-radius:10px;padding:1px 8px;white-space:nowrap}
+.mand.y{background:#FDE7E8;color:#B3262C}.mand.c{background:#FFF1D6;color:#8A5A00}.mand.n{background:#EEEEF2;color:#5C5C68}
+details.acc2{border:1px solid var(--border);border-radius:8px;margin:12px 0;background:#fff}
+details.acc2>summary{cursor:pointer;padding:12px 16px;font-weight:600;font-size:13.5px;display:flex;gap:10px;align-items:center;list-style:none}
+details.acc2>summary::-webkit-details-marker{display:none}
+details.acc2>summary::before{content:"▸";color:var(--muted);transition:transform .15s}
+details.acc2[open]>summary::before{transform:rotate(90deg)}
+details.acc2>.acc-body{padding:4px 16px 16px}
+.vtile{border:1px solid var(--border);border-radius:10px;padding:20px 22px;background:linear-gradient(135deg,#F7F5FF,#fff);display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+.vtile .big{font-size:20px;font-weight:700}
+.kv-inline{display:flex;gap:6px 22px;flex-wrap:wrap;font-size:12.5px;color:var(--text-2)}
+.kv-inline b{color:var(--text)}
+.nbadge{margin-left:auto;background:var(--danger);color:#fff;border-radius:10px;font-size:11px;font-weight:700;padding:0 7px;line-height:18px}
+.small-note{font-size:11.5px;color:var(--muted);line-height:1.5}
+.tbl .num-r{text-align:right;font-variant-numeric:tabular-nums}
+.reason-list{margin:6px 0 0;padding-left:18px;font-size:12.5px;color:var(--danger)}
+.grid-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:1100px){.grid-2{grid-template-columns:1fr}.stepper{flex-wrap:wrap}}
